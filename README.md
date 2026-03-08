@@ -1,16 +1,44 @@
 # Temine
 
-> AI 编程终端管理工具 / Terminal management tool for AI coding workflows
+> **AI 编程终端编排器** — 管理你的所有 AI 代理
+>
+> tmux 管理窗格，iTerm2 提升终端，Warp 让 AI 帮你写命令，Cursor 让 AI 帮你写代码 — 而 **Temine 管理你的所有 AI 代理**。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-green.svg)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos)
+[![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)]()
 
 [中文](#中文) | [English](#english)
 
 ---
 
 ## 中文
+
+### 为什么需要 Temine？
+
+当你同时运行 4-8 个 Claude Code 实例时，**没有任何现有工具**能够：
+- 一键将它们排布到屏幕上
+- 实时感知哪个实例在等你确认
+- 在浏览器中总览所有实例状态
+- 在 AI 等你时推送系统通知
+
+Temine 填补了这个空白 — 它是目前**唯一的 AI CLI 编排工具**。
+
+### 功能对比
+
+| 功能 | tmux | iTerm2 | Warp | Zellij | Claude Code | Cursor | **Temine** |
+|------|:----:|:------:|:----:|:------:|:-----------:|:------:|:----------:|
+| 多窗口管理 | 虚拟窗格 | 分屏 | 分屏 | 虚拟窗格 | 无 | IDE 内 | **OS 级窗口** |
+| 一键批量排布 | 需脚本 | 需脚本 | — | Layout | — | — | **原生支持** |
+| AI 状态检测 | — | Triggers | — | — | 单实例 | IDE 内 | **多规则+置信度** |
+| 等待确认检测 | — | 可配置 | — | — | — | — | **原生支持** |
+| 系统通知 | 基础 | 可配置 | 基础 | — | — | IDE 内 | **AI 感知通知** |
+| Web 控制面板 | — | — | — | — | — | — | **内置** |
+| 实时状态推送 | — | — | — | — | — | — | **SSE** |
+| 输出记录+搜索 | 可配 | — | — | — | — | — | **命令/输出分离** |
+| 窗口标签+图标 | 可命名 | 可命名 | 可命名 | 可命名 | — | — | **自动匹配** |
+| 零依赖 | 系统包 | App | App | 需安装 | npm | App | **纯 Node.js** |
 
 ### Temine 是什么？
 
@@ -121,6 +149,16 @@ Temine 利用 macOS AppleScript 与 Terminal.app / iTerm2 交互：
 ---
 
 ## English
+
+### Why Temine?
+
+When running 4-8 Claude Code instances simultaneously, **no existing tool** can:
+- Tile them on screen with one command
+- Detect which instance is waiting for your confirmation
+- Show all instance states in a browser dashboard
+- Push system notifications when AI needs you
+
+Temine fills this gap — the **only AI CLI orchestration tool** available today.
 
 ### What is Temine?
 
