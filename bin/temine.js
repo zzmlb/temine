@@ -133,7 +133,7 @@ switch (command) {
   }
 
   case 'app': {
-    // 生成 macOS .app 快捷方式，可放入 Dock / Applications
+    // 用 osacompile 生成原生 macOS .app 快捷方式
     if (process.platform !== 'darwin') {
       console.log('❌ temine app 仅支持 macOS');
       break;
@@ -143,68 +143,77 @@ switch (command) {
       ? '/Applications/Temine.app'
       : `${process.env.HOME}/Applications/Temine.app`;
 
-    const { mkdirSync, writeFileSync, chmodSync, existsSync } = await import('node:fs');
-    const contentsDir = `${appDir}/Contents`;
-    const macosDir = `${contentsDir}/MacOS`;
-
-    mkdirSync(macosDir, { recursive: true });
-
-    // 查找 temine 的绝对路径
     const { execSync: ex } = await import('node:child_process');
-    let teminePath;
+    const { mkdirSync, existsSync: ex2, rmSync } = await import('node:fs');
+
+    // 确保目标目录存在
+    const parentDir = appDir.replace(/\/[^/]+$/, '');
+    mkdirSync(parentDir, { recursive: true });
+
+    // 删除旧的 .app（osacompile 不会自动覆盖）
+    if (ex2(appDir)) { rmSync(appDir, { recursive: true }); }
+
+    // 查找 temine 和 node 的绝对路径
+    let teminePath, nodePath;
     try { teminePath = ex('which temine', { encoding: 'utf8' }).trim(); } catch {
-      teminePath = `${process.argv[1]}`;
+      teminePath = process.argv[1];
+    }
+    try { nodePath = ex('which node', { encoding: 'utf8' }).trim(); } catch {
+      nodePath = process.execPath;
     }
 
-    // 生成启动脚本
-    const launcher = `#!/bin/bash
-# Temine Panel Launcher
-PORT=${appPort}
-URL="http://localhost:$PORT"
-TEMINE="${teminePath}"
+    // AppleScript: 检查面板 → 启动 → 用 Chrome app mode 打开
+    const script = `
+on run
+  set panelURL to "http://localhost:${appPort}"
+  set temineBin to "${teminePath}"
+  set nodeBin to "${nodePath}"
 
-# 加载用户 PATH（确保能找到 node/temine）
-export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.nvm/versions/node/*/bin:$PATH"
+  -- 检查面板是否已运行
+  set isRunning to false
+  try
+    do shell script "curl -s --connect-timeout 1 " & quoted form of panelURL & " > /dev/null 2>&1"
+    set isRunning to true
+  end try
 
-# 检查面板是否已运行
-if ! curl -s --connect-timeout 1 "$URL" > /dev/null 2>&1; then
-  nohup "$TEMINE" panel $PORT > /dev/null 2>&1 &
-  for i in $(seq 1 50); do
-    if curl -s --connect-timeout 1 "$URL" > /dev/null 2>&1; then break; fi
-    sleep 0.1
-  done
-fi
+  -- 未运行则后台启动
+  if not isRunning then
+    do shell script "PATH=/usr/local/bin:/opt/homebrew/bin:$PATH; nohup " & quoted form of nodeBin & " " & quoted form of temineBin & " panel ${appPort} > /dev/null 2>&1 &"
+    -- 等待服务就绪
+    repeat 50 times
+      try
+        do shell script "curl -s --connect-timeout 1 " & quoted form of panelURL & " > /dev/null 2>&1"
+        exit repeat
+      end try
+      delay 0.1
+    end repeat
+  end if
 
-# 直接调用 Chrome 可执行文件（--app 在 Chrome 已运行时也能生效）
-CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-EDGE="/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+  -- 用 Chrome app mode 打开（独立窗口无地址栏）
+  set chromeApp to "/Applications/Google Chrome.app"
+  set edgeApp to "/Applications/Microsoft Edge.app"
 
-if [ -x "$CHROME" ]; then
-  "$CHROME" --app="$URL" &
-elif [ -x "$EDGE" ]; then
-  "$EDGE" --app="$URL" &
-else
-  open "$URL"
-fi
+  if (do shell script "test -d " & quoted form of chromeApp & " && echo yes || echo no") is "yes" then
+    do shell script quoted form of (chromeApp & "/Contents/MacOS/Google Chrome") & " --app=" & quoted form of panelURL & " > /dev/null 2>&1 &"
+  else if (do shell script "test -d " & quoted form of edgeApp & " && echo yes || echo no") is "yes" then
+    do shell script quoted form of (edgeApp & "/Contents/MacOS/Microsoft Edge") & " --app=" & quoted form of panelURL & " > /dev/null 2>&1 &"
+  else
+    open location panelURL
+  end if
+end run
 `;
-    writeFileSync(`${macosDir}/Temine`, launcher);
-    chmodSync(`${macosDir}/Temine`, 0o755);
 
-    // 生成 Info.plist
-    const plist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key><string>Temine</string>
-  <key>CFBundleIdentifier</key><string>com.temine.panel</string>
-  <key>CFBundleName</key><string>Temine</string>
-  <key>CFBundleVersion</key><string>0.8.0</string>
-  <key>CFBundleShortVersionString</key><string>0.8.0</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>LSUIElement</key><true/>
-</dict>
-</plist>`;
-    writeFileSync(`${contentsDir}/Info.plist`, plist);
+    // 用 osacompile 生成原生 .app
+    const tmpScript = '/tmp/temine-app.applescript';
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(tmpScript, script);
+
+    try {
+      ex(`osacompile -o "${appDir}" "${tmpScript}"`);
+    } catch (e) {
+      console.error('❌ 生成失败:', e.message);
+      break;
+    }
 
     console.log(`\n✅ 已生成 Temine.app`);
     console.log(`   位置: ${appDir}`);
