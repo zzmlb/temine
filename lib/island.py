@@ -23,6 +23,31 @@ import time
 import urllib.request
 from pathlib import Path
 
+# === 必须先做 framework Python 检查 ===
+# PyObjC 的 AppKit GUI 只能在 macOS 自带的 framework Python 下跑
+# 如果是 conda / pyenv / venv 的 Python，会立即 SIGTRAP 崩溃
+# 检测到非 framework Python 时，自动 re-exec 到 /usr/bin/python3
+_SYSTEM_PY = "/usr/bin/python3"
+_CLT_PY = "/Library/Developer/CommandLineTools/usr/bin/python3"
+
+
+def _is_framework_python() -> bool:
+    exe = sys.executable or ""
+    framework_prefixes = (
+        "/usr/bin/",
+        "/Library/Developer/CommandLineTools/",
+        "/Applications/Xcode.app/",
+        "/System/",
+    )
+    return any(exe.startswith(p) for p in framework_prefixes) or "Python.framework" in exe
+
+
+if not _is_framework_python():
+    target = _SYSTEM_PY if os.path.exists(_SYSTEM_PY) else (_CLT_PY if os.path.exists(_CLT_PY) else None)
+    if target:
+        os.execv(target, [target, *sys.argv])
+    # 找不到系统 Python 就放任原 Python 跑，下面 import objc 会给清晰的错
+
 import objc  # type: ignore[import-not-found]
 from AppKit import (  # type: ignore[import-not-found]
     NSApplication,
@@ -48,16 +73,18 @@ from AppKit import (  # type: ignore[import-not-found]
     NSWindowCollectionBehaviorStationary,
     NSWindowStyleMaskBorderless,
 )
-from Foundation import NSMakeRect, NSObject, NSPoint  # type: ignore[import-not-found]
+from Foundation import NSMakeRect, NSObject, NSPoint, NSTimer  # type: ignore[import-not-found]
 
 PORT = 7890
 PANEL_URL = f"http://localhost:{PORT}"
 STATE_DIR = Path.home() / ".temine" / "island"
 STATE_FILE = STATE_DIR / "state.json"
 
-COMPACT_W, COMPACT_H = 48, 48
-EXPANDED_W, EXPANDED_H = 140, 54
+# 大幅放大 + 加发光 halo，确保任何屏幕上都极其醒目
+COMPACT_W, COMPACT_H = 88, 88
+EXPANDED_W, EXPANDED_H = 220, 72
 DRAG_THRESHOLD_PX = 4
+ANIM_FPS = 30
 
 
 def load_state() -> dict:
@@ -166,7 +193,22 @@ class IslandView(NSView):
         self.drag_moved = False
         self.drag_start_window_origin = None
         self.drag_start_mouse_global = None
+        # 动画相关
+        self.phase = 0.0
+        self.start_flash_until = time.time() + 2.5  # 启动后 2.5 秒疯狂闪烁吸引视线
+        self.anim_timer = None
         return self
+
+    def viewDidMoveToWindow(self):
+        # 启动定时器驱动呼吸动画
+        if self.anim_timer is None:
+            self.anim_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                1.0 / ANIM_FPS, self, b"tick:", None, True
+            )
+
+    def tick_(self, _timer):
+        self.phase = (self.phase + 1.0 / ANIM_FPS) % 100.0
+        self.setNeedsDisplay_(True)
 
     def acceptsFirstMouse_(self, _event):
         return True
@@ -254,68 +296,103 @@ class IslandView(NSView):
         NSApplication.sharedApplication().terminate_(None)
 
     def drawRect_(self, _rect):
+        import math
+
         bounds = self.bounds()
         radius = bounds.size.height / 2.0
-        # 黑色胶囊背景
+
+        # 启动后 2.5 秒：每秒闪烁 5 次（脉冲），让用户绝对找得到
+        now = time.time()
+        flashing = now < self.start_flash_until
+        flash_intensity = 0.0
+        if flashing:
+            flash_intensity = abs(math.sin(now * 5.0 * math.pi))
+
+        # 呼吸相位：0..1
+        breathe = 0.5 + 0.5 * math.sin(self.phase * math.pi * 1.2)
+
+        # === 外层发光 halo —— 让按钮在远处也能被注意到 ===
+        # 用多层径向圆叠加模拟发光（PyObjC 没有直接的 box-shadow）
+        cx = bounds.size.width / 2.0
+        cy = bounds.size.height / 2.0
+        halo_intensity = 0.35 + 0.25 * breathe + 0.4 * flash_intensity
+        for i in range(6, 0, -1):
+            alpha = halo_intensity * (i / 6.0) * 0.18
+            halo_radius = radius + i * 6
+            halo_rect = NSMakeRect(
+                cx - halo_radius, cy - halo_radius, halo_radius * 2, halo_radius * 2
+            )
+            halo_path = NSBezierPath.bezierPathWithOvalInRect_(halo_rect)
+            NSColor.colorWithRed_green_blue_alpha_(0.93, 0.28, 0.60, alpha).setFill()
+            halo_path.fill()
+
+        # === 主胶囊背景 ===
         path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             bounds, radius, radius
         )
         if self.expanded:
-            # 展开：稍亮的紫黑渐变
             grad = NSGradient.alloc().initWithStartingColor_endingColor_(
-                NSColor.colorWithRed_green_blue_alpha_(0.04, 0.04, 0.06, 0.97),
-                NSColor.colorWithRed_green_blue_alpha_(0.08, 0.06, 0.12, 0.97),
+                NSColor.colorWithRed_green_blue_alpha_(0.05, 0.04, 0.08, 0.98),
+                NSColor.colorWithRed_green_blue_alpha_(0.10, 0.06, 0.16, 0.98),
             )
             grad.drawInBezierPath_angle_(path, 135.0)
         else:
-            NSColor.colorWithRed_green_blue_alpha_(0.02, 0.02, 0.03, 0.95).setFill()
+            NSColor.colorWithRed_green_blue_alpha_(0.03, 0.02, 0.04, 0.97).setFill()
             path.fill()
-        # 高光描边
-        path.setLineWidth_(1.0)
-        NSColor.colorWithWhite_alpha_(1.0, 0.07).setStroke()
+        # 高光描边（启动闪烁时变亮）
+        path.setLineWidth_(1.5 + flash_intensity * 1.5)
+        edge_alpha = 0.12 + 0.4 * flash_intensity + 0.15 * breathe
+        NSColor.colorWithRed_green_blue_alpha_(1.0, 0.5, 0.8, edge_alpha).setStroke()
         path.stroke()
 
         if not self.expanded:
-            # 紧凑态：中央紫粉光点
-            cx = bounds.size.width / 2.0
-            cy = bounds.size.height / 2.0
-            dot_size = 11.0
+            # 紧凑态：放大的中央紫粉光球（呼吸 + 闪烁）
+            dot_size = 22.0 + 4.0 * breathe + 6.0 * flash_intensity
             dot_rect = NSMakeRect(
                 cx - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size
             )
             dot_path = NSBezierPath.bezierPathWithOvalInRect_(dot_rect)
             grad = NSGradient.alloc().initWithStartingColor_endingColor_(
-                NSColor.colorWithRed_green_blue_alpha_(0.39, 0.40, 0.95, 1.0),
-                NSColor.colorWithRed_green_blue_alpha_(0.93, 0.28, 0.60, 1.0),
+                NSColor.colorWithRed_green_blue_alpha_(0.55, 0.55, 1.0, 1.0),  # 浅紫
+                NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0),  # 亮粉
             )
             grad.drawInBezierPath_angle_(dot_path, 135.0)
+            # 内部高光小点（让球看起来"湿润"）
+            hl_size = dot_size * 0.35
+            hl_rect = NSMakeRect(
+                cx - hl_size / 2.0 - dot_size * 0.15,
+                cy + dot_size * 0.10,
+                hl_size,
+                hl_size,
+            )
+            hl_path = NSBezierPath.bezierPathWithOvalInRect_(hl_rect)
+            NSColor.colorWithWhite_alpha_(1.0, 0.55).setFill()
+            hl_path.fill()
         else:
-            # 展开态：左侧光点 + "Temine" 文字
-            cx_dot = 18.0
-            cy = bounds.size.height / 2.0
-            dot_size = 9.0
+            # 展开态：左侧光点 + 文字
+            cx_dot = 22.0
+            cy_d = bounds.size.height / 2.0
+            dot_size = 14.0 + 2.0 * breathe
             dot_rect = NSMakeRect(
-                cx_dot - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size
+                cx_dot - dot_size / 2.0, cy_d - dot_size / 2.0, dot_size, dot_size
             )
             dot_path = NSBezierPath.bezierPathWithOvalInRect_(dot_rect)
             grad = NSGradient.alloc().initWithStartingColor_endingColor_(
-                NSColor.colorWithRed_green_blue_alpha_(0.39, 0.40, 0.95, 1.0),
-                NSColor.colorWithRed_green_blue_alpha_(0.93, 0.28, 0.60, 1.0),
+                NSColor.colorWithRed_green_blue_alpha_(0.55, 0.55, 1.0, 1.0),
+                NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0),
             )
             grad.drawInBezierPath_angle_(dot_path, 135.0)
 
             # 文字
-            font = NSFont.systemFontOfSize_weight_(13.0, 0.3)
+            font = NSFont.boldSystemFontOfSize_(15.0)
             text = "Temine 控制面板"
             attrs = {
-                NSForegroundColorAttributeName: NSColor.colorWithWhite_alpha_(
-                    0.97, 1.0
-                ),
+                NSForegroundColorAttributeName: NSColor.colorWithWhite_alpha_(0.98, 1.0),
                 NSFontAttributeName: font,
             }
             astr = NSAttributedString.alloc().initWithString_attributes_(text, attrs)
             sz = astr.size()
-            tx = cx_dot + dot_size / 2.0 + 8.0
+            tx = cx_dot + dot_size / 2.0 + 10.0
             ty = (bounds.size.height - sz.height) / 2.0
             astr.drawAtPoint_(NSPoint(tx, ty))
 
@@ -324,16 +401,17 @@ class IslandView(NSView):
 class AppDelegate(NSObject):
     def applicationDidFinishLaunching_(self, _notification):
         state = load_state()
-        # 默认放在屏幕右侧偏上
+        # 默认放在屏幕**正上方居中**（macOS 灵动岛位置），最显眼最直觉
         from AppKit import NSScreen  # type: ignore[import-not-found]
 
         screen = NSScreen.mainScreen()
         visible = screen.visibleFrame() if screen else None
         if visible:
-            default_x = visible.origin.x + visible.size.width - COMPACT_W - 24
-            default_y = visible.origin.y + visible.size.height - COMPACT_H - 80
+            default_x = visible.origin.x + (visible.size.width - COMPACT_W) / 2.0
+            # macOS 坐标 Y 轴向上：visible.size.height 顶部留 24 像素
+            default_y = visible.origin.y + visible.size.height - COMPACT_H - 24
         else:
-            default_x, default_y = 1200, 600
+            default_x, default_y = 800, 1000
         x = float(state.get("x", default_x))
         y = float(state.get("y", default_y))
         rect = NSMakeRect(x, y, COMPACT_W, COMPACT_H)

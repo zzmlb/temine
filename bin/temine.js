@@ -342,12 +342,21 @@ end run
       break;
     }
 
-    // 1. 检查 python3
-    let py3;
-    try { py3 = ex('which python3', { encoding: 'utf-8' }).trim(); }
-    catch { console.log('❌ 未找到 python3，请先安装：xcode-select --install'); break; }
+    // 1. 必须用 macOS 系统的 framework Python（conda/pyenv 的非 framework Python 跑 NSWindow 会 SIGTRAP）
+    const SYS_PY_CANDIDATES = [
+      '/usr/bin/python3',
+      '/Library/Developer/CommandLineTools/usr/bin/python3',
+    ];
+    let py3 = SYS_PY_CANDIDATES.find(p => ex2(p));
+    if (!py3) {
+      console.log('❌ 未找到系统 Python（/usr/bin/python3）');
+      console.log('   请先安装 Xcode Command Line Tools：');
+      console.log('   xcode-select --install');
+      break;
+    }
+    console.log(`🐍 使用系统 Python: ${py3}`);
 
-    // 2. 检查 pyobjc
+    // 2. 检查 pyobjc 是否已装到系统 Python
     let needPip = false;
     try {
       ex(`${py3} -c "import objc, AppKit"`, { stdio: 'ignore' });
@@ -355,12 +364,13 @@ end run
       needPip = true;
     }
     if (needPip) {
-      console.log('📦 安装依赖 pyobjc-core / pyobjc-framework-Cocoa（首次约 1-3 分钟）…');
+      console.log('📦 安装依赖 pyobjc-core / pyobjc-framework-Cocoa 到系统 Python（首次约 1-3 分钟）…');
       try {
-        ex(`${py3} -m pip install --user pyobjc-core pyobjc-framework-Cocoa`, { stdio: 'inherit' });
+        // --user 装到 ~/Library/Python/X.Y/lib，不污染系统目录、无需 sudo
+        ex(`${py3} -m pip install --user --break-system-packages pyobjc-core pyobjc-framework-Cocoa`, { stdio: 'inherit' });
       } catch (e) {
         console.log(`❌ pip 安装失败：${e.message}`);
-        console.log(`   手动跑：${py3} -m pip install --user pyobjc-core pyobjc-framework-Cocoa`);
+        console.log(`   手动跑：${py3} -m pip install --user --break-system-packages pyobjc-core pyobjc-framework-Cocoa`);
         break;
       }
     }
