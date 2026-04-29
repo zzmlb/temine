@@ -188,7 +188,7 @@ class IslandView(NSView):
         if self is None:
             return None
         self.expanded = False
-        self.tracking_area = None
+        self.tracking_area_added = False
         self.dragging = False
         self.drag_moved = False
         self.drag_start_window_origin = None
@@ -201,7 +201,23 @@ class IslandView(NSView):
 
     def viewDidMoveToWindow(self):
         objc.super(IslandView, self).viewDidMoveToWindow()
-        # 启动定时器驱动呼吸动画
+        # 仅在视图首次进入窗口时一次性加 tracking area
+        # NSTrackingInVisibleRect 让 AppKit 自动跟随视图大小，不需要手动重建
+        if not self.tracking_area_added and self.window() is not None:
+            opts = (
+                NSTrackingMouseEnteredAndExited
+                | NSTrackingActiveAlways
+                | NSTrackingInVisibleRect
+            )
+            ta = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+                ((0.0, 0.0), (0.0, 0.0)),  # rect 在 InVisibleRect 模式下被忽略
+                opts,
+                self,
+                None,
+            )
+            self.addTrackingArea_(ta)
+            self.tracking_area_added = True
+        # 启动呼吸动画定时器
         if self.anim_timer is None:
             self.anim_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
                 1.0 / ANIM_FPS, self, b"tick:", None, True
@@ -213,22 +229,6 @@ class IslandView(NSView):
 
     def acceptsFirstMouse_(self, _event):
         return True
-
-    def updateTrackingAreas(self):
-        # NSView 文档要求子类先调 super.updateTrackingAreas()，否则 AppKit 在
-        # macOS 14+ 会抛 NSInternalInconsistencyException 并 crash 进程
-        objc.super(IslandView, self).updateTrackingAreas()
-        if self.tracking_area is not None:
-            self.removeTrackingArea_(self.tracking_area)
-        opts = (
-            NSTrackingMouseEnteredAndExited
-            | NSTrackingActiveAlways
-            | NSTrackingInVisibleRect
-        )
-        self.tracking_area = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
-            self.bounds(), opts, self, None
-        )
-        self.addTrackingArea_(self.tracking_area)
 
     def mouseEntered_(self, _event):
         self._set_expanded(True)
@@ -249,10 +249,10 @@ class IslandView(NSView):
         cur = win.frame()
         new_x = cur.origin.x + (cur.size.width - new_w) / 2.0
         new_y = cur.origin.y + (cur.size.height - new_h) / 2.0
+        # contentView 会自动跟随窗口尺寸 resize，不需要手动 setFrameSize_
         win.setFrame_display_animate_(
             NSMakeRect(new_x, new_y, new_w, new_h), True, True
         )
-        self.setFrameSize_((new_w, new_h))
         self.setNeedsDisplay_(True)
 
     def mouseDown_(self, _event):
