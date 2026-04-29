@@ -52,16 +52,13 @@ import objc  # type: ignore[import-not-found]
 from AppKit import (  # type: ignore[import-not-found]
     NSApplication,
     NSApp,
-    NSAttributedString,
     NSBackingStoreBuffered,
-    NSBezierPath,
     NSColor,
     NSEvent,
     NSFont,
-    NSFontAttributeName,
-    NSForegroundColorAttributeName,
-    NSGradient,
     NSStatusWindowLevel,
+    NSTextField,
+    NSTextAlignmentLeft,
     NSTrackingActiveAlways,
     NSTrackingArea,
     NSTrackingInVisibleRect,
@@ -73,7 +70,7 @@ from AppKit import (  # type: ignore[import-not-found]
     NSWindowCollectionBehaviorStationary,
     NSWindowStyleMaskBorderless,
 )
-from Foundation import NSMakeRect, NSObject, NSPoint, NSTimer  # type: ignore[import-not-found]
+from Foundation import NSMakeRect, NSObject, NSPoint  # type: ignore[import-not-found]
 
 PORT = 7890
 PANEL_URL = f"http://localhost:{PORT}"
@@ -181,7 +178,14 @@ def open_panel_window() -> None:
 
 # pylint: disable=invalid-name
 class IslandView(NSView):
-    """灵动岛自定义 NSView：渲染胶囊、捕获鼠标"""
+    """
+    灵动岛容器视图。
+
+    设计原则：**不重写 drawRect_**。所有视觉用 CALayer 子层 + NSTextField 子视图渲染，
+    走 Core Animation 渲染管线（C 路径）；Python 只处理鼠标事件。
+    PyObjC 12 + macOS 15 在 layer-backed view 中调 Python drawRect_
+    会触发 NSException，所以彻底避开。
+    """
 
     def init(self):  # noqa: D401 - PyObjC 风格
         self = objc.super(IslandView, self).init()
@@ -193,11 +197,64 @@ class IslandView(NSView):
         self.drag_moved = False
         self.drag_start_window_origin = None
         self.drag_start_mouse_global = None
+        self.dot_view = None
+        self.label_view = None
         return self
+
+    def _setup_layers(self) -> None:
+        """初始化主视图 layer + 子视图。仅在 viewDidMoveToWindow 调一次。"""
+        self.setWantsLayer_(True)
+        layer = self.layer()
+        if layer is None:
+            return
+        # 黑色胶囊背景
+        layer.setBackgroundColor_(
+            NSColor.colorWithRed_green_blue_alpha_(0.04, 0.03, 0.06, 0.97).CGColor()
+        )
+        layer.setCornerRadius_(COMPACT_H / 2.0)
+        layer.setMasksToBounds_(True)
+        # 紫粉描边
+        layer.setBorderColor_(
+            NSColor.colorWithRed_green_blue_alpha_(0.93, 0.28, 0.60, 0.7).CGColor()
+        )
+        layer.setBorderWidth_(2.0)
+
+        # 紫粉圆点子视图
+        cx = COMPACT_W / 2.0
+        cy = COMPACT_H / 2.0
+        dot_size = 26.0
+        self.dot_view = NSView.alloc().initWithFrame_(
+            NSMakeRect(cx - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size)
+        )
+        self.dot_view.setWantsLayer_(True)
+        dot_layer = self.dot_view.layer()
+        dot_layer.setBackgroundColor_(
+            NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0).CGColor()
+        )
+        dot_layer.setCornerRadius_(dot_size / 2.0)
+        self.addSubview_(self.dot_view)
+
+        # 文字标签（默认隐藏，展开时显示）
+        self.label_view = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(48, (EXPANDED_H - 24) / 2.0, EXPANDED_W - 56, 24)
+        )
+        self.label_view.setStringValue_("Temine 控制面板")
+        self.label_view.setBezeled_(False)
+        self.label_view.setDrawsBackground_(False)
+        self.label_view.setEditable_(False)
+        self.label_view.setSelectable_(False)
+        self.label_view.setBordered_(False)
+        self.label_view.setFont_(NSFont.boldSystemFontOfSize_(14.0))
+        self.label_view.setTextColor_(NSColor.colorWithWhite_alpha_(0.98, 1.0))
+        self.label_view.setAlignment_(NSTextAlignmentLeft)
+        self.label_view.setHidden_(True)
+        self.addSubview_(self.label_view)
 
     def viewDidMoveToWindow(self):
         objc.super(IslandView, self).viewDidMoveToWindow()
-        if not self.tracking_area_added and self.window() is not None:
+        if self.window() is None:
+            return
+        if not self.tracking_area_added:
             opts = (
                 NSTrackingMouseEnteredAndExited
                 | NSTrackingActiveAlways
@@ -211,6 +268,8 @@ class IslandView(NSView):
             )
             self.addTrackingArea_(ta)
             self.tracking_area_added = True
+        if self.dot_view is None:
+            self._setup_layers()
 
     def acceptsFirstMouse_(self, _event):
         return True
@@ -227,18 +286,53 @@ class IslandView(NSView):
             return
         self.expanded = expanded
         win = self.window()
-        if win is None:
+        if win is None or self.dot_view is None:
             return
         new_w = EXPANDED_W if expanded else COMPACT_W
         new_h = EXPANDED_H if expanded else COMPACT_H
         cur = win.frame()
         new_x = cur.origin.x + (cur.size.width - new_w) / 2.0
         new_y = cur.origin.y + (cur.size.height - new_h) / 2.0
-        # contentView 会自动跟随窗口尺寸 resize，不需要手动 setFrameSize_
         win.setFrame_display_animate_(
             NSMakeRect(new_x, new_y, new_w, new_h), True, True
         )
-        self.setNeedsDisplay_(True)
+        # 更新 layer cornerRadius 与子视图位置
+        layer = self.layer()
+        if layer is not None:
+            layer.setCornerRadius_(new_h / 2.0)
+        if expanded:
+            # 展开：圆点缩到左侧，文字显示
+            dot_size = 14.0
+            cx_dot = 22.0
+            cy = new_h / 2.0
+            self.dot_view.setFrame_(
+                NSMakeRect(
+                    cx_dot - dot_size / 2.0,
+                    cy - dot_size / 2.0,
+                    dot_size,
+                    dot_size,
+                )
+            )
+            self.dot_view.layer().setCornerRadius_(dot_size / 2.0)
+            self.label_view.setFrame_(
+                NSMakeRect(40, (new_h - 24) / 2.0, new_w - 48, 24)
+            )
+            self.label_view.setHidden_(False)
+        else:
+            # 紧凑：圆点回到中央放大，文字隐藏
+            self.label_view.setHidden_(True)
+            dot_size = 26.0
+            cx = new_w / 2.0
+            cy = new_h / 2.0
+            self.dot_view.setFrame_(
+                NSMakeRect(
+                    cx - dot_size / 2.0,
+                    cy - dot_size / 2.0,
+                    dot_size,
+                    dot_size,
+                )
+            )
+            self.dot_view.layer().setCornerRadius_(dot_size / 2.0)
 
     def mouseDown_(self, _event):
         win = self.window()
@@ -281,62 +375,7 @@ class IslandView(NSView):
         self.drag_moved = False
 
     def rightMouseDown_(self, _event):
-        # 右键 = 退出灵动岛
         NSApplication.sharedApplication().terminate_(None)
-
-    def drawRect_(self, _rect):
-        # 极简版：只画黑色圆胶囊 + 紫粉圆点 + 文字（展开时）
-        # 不用 NSGradient、不用动画、不用 halo——这些在 PyObjC 12 + macOS 15 下不稳定
-        bounds = self.bounds()
-        radius = bounds.size.height / 2.0
-
-        # 黑色胶囊背景
-        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            bounds, radius, radius
-        )
-        NSColor.colorWithRed_green_blue_alpha_(0.04, 0.03, 0.06, 0.97).setFill()
-        path.fill()
-
-        # 紫粉描边（增加可见性）
-        NSColor.colorWithRed_green_blue_alpha_(0.93, 0.28, 0.60, 0.55).setStroke()
-        path.setLineWidth_(2.0)
-        path.stroke()
-
-        cx = bounds.size.width / 2.0
-        cy = bounds.size.height / 2.0
-
-        if not self.expanded:
-            # 紧凑态：中央紫粉圆点
-            dot_size = 24.0
-            dot_rect = NSMakeRect(
-                cx - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size
-            )
-            dot_path = NSBezierPath.bezierPathWithOvalInRect_(dot_rect)
-            NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0).setFill()
-            dot_path.fill()
-        else:
-            # 展开态：左侧光点 + 文字
-            cx_dot = 22.0
-            dot_size = 14.0
-            dot_rect = NSMakeRect(
-                cx_dot - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size
-            )
-            dot_path = NSBezierPath.bezierPathWithOvalInRect_(dot_rect)
-            NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0).setFill()
-            dot_path.fill()
-
-            # 文字
-            font = NSFont.boldSystemFontOfSize_(14.0)
-            text = "Temine 控制面板"
-            attrs = {
-                NSForegroundColorAttributeName: NSColor.colorWithWhite_alpha_(0.98, 1.0),
-                NSFontAttributeName: font,
-            }
-            astr = NSAttributedString.alloc().initWithString_attributes_(text, attrs)
-            sz = astr.size()
-            tx = cx_dot + dot_size / 2.0 + 10.0
-            ty = (bounds.size.height - sz.height) / 2.0
-            astr.drawAtPoint_(NSPoint(tx, ty))
 
 
 # pylint: disable=invalid-name
