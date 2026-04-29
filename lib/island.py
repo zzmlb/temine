@@ -77,11 +77,12 @@ PANEL_URL = f"http://localhost:{PORT}"
 STATE_DIR = Path.home() / ".temine" / "island"
 STATE_FILE = STATE_DIR / "state.json"
 
-# 大幅放大 + 加发光 halo，确保任何屏幕上都极其醒目
-COMPACT_W, COMPACT_H = 88, 88
-EXPANDED_W, EXPANDED_H = 220, 72
+# 紧凑/展开**高度必须相同**，否则鼠标会在垂直方向出展开窗口边界，引发抖动
+# 这样鼠标在窗口内移动时只会触发横向尺寸变化，不会在边界跨越
+COMPACT_W, COMPACT_H = 110, 48
+EXPANDED_W, EXPANDED_H = 260, 48
 DRAG_THRESHOLD_PX = 4
-ANIM_FPS = 30
+COLLAPSE_DELAY_SEC = 0.15  # 鼠标退出后延迟收缩，防抖
 
 
 def load_state() -> dict:
@@ -227,10 +228,10 @@ class IslandView(NSView):
             traceback.print_exc()
 
         try:
-            # 紫粉圆点子视图
+            # 紫粉圆点子视图（紧凑态居中）
             cx = COMPACT_W / 2.0
             cy = COMPACT_H / 2.0
-            dot_size = 26.0
+            dot_size = 16.0
             self.dot_view = NSView.alloc().initWithFrame_(
                 NSMakeRect(cx - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size)
             )
@@ -244,7 +245,7 @@ class IslandView(NSView):
 
             # 文字标签（默认隐藏，展开时显示）
             self.label_view = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(48, (EXPANDED_H - 24) / 2.0, EXPANDED_W - 56, 24)
+                NSMakeRect(40, (EXPANDED_H - 22) / 2.0, EXPANDED_W - 50, 22)
             )
             self.label_view.setStringValue_("Temine 控制面板")
             self.label_view.setBezeled_(False)
@@ -294,11 +295,31 @@ class IslandView(NSView):
         return True
 
     def mouseEntered_(self, _event):
+        # 取消任何待执行的收缩
+        NSObject.cancelPreviousPerformRequestsWithTarget_selector_object_(
+            self, b"_doCollapse:", None
+        )
         self._set_expanded(True)
 
     def mouseExited_(self, _event):
-        if not self.dragging:
-            self._set_expanded(False)
+        if self.dragging:
+            return
+        # 延迟收缩，避免展开/收缩动画期间鼠标短暂跨越边界引发抖动
+        self.performSelector_withObject_afterDelay_(
+            b"_doCollapse:", None, COLLAPSE_DELAY_SEC
+        )
+
+    def _doCollapse_(self, _arg):
+        # 收缩前再次确认鼠标确实在窗口外
+        win = self.window()
+        if win is None or self.dragging:
+            return
+        cur = NSEvent.mouseLocation()
+        f = win.frame()
+        if (f.origin.x <= cur.x <= f.origin.x + f.size.width and
+                f.origin.y <= cur.y <= f.origin.y + f.size.height):
+            return  # 鼠标还在窗口内，不收缩
+        self._set_expanded(False)
 
     def _set_expanded(self, expanded: bool) -> None:
         if expanded == self.expanded:
@@ -321,8 +342,8 @@ class IslandView(NSView):
             layer.setCornerRadius_(new_h / 2.0)
         if expanded:
             # 展开：圆点缩到左侧，文字显示
-            dot_size = 14.0
-            cx_dot = 22.0
+            dot_size = 12.0
+            cx_dot = 20.0
             cy = new_h / 2.0
             self.dot_view.setFrame_(
                 NSMakeRect(
@@ -334,13 +355,13 @@ class IslandView(NSView):
             )
             self.dot_view.layer().setCornerRadius_(dot_size / 2.0)
             self.label_view.setFrame_(
-                NSMakeRect(40, (new_h - 24) / 2.0, new_w - 48, 24)
+                NSMakeRect(34, (new_h - 22) / 2.0, new_w - 44, 22)
             )
             self.label_view.setHidden_(False)
         else:
-            # 紧凑：圆点回到中央放大，文字隐藏
+            # 紧凑：圆点回到中央，文字隐藏
             self.label_view.setHidden_(True)
-            dot_size = 26.0
+            dot_size = 16.0
             cx = new_w / 2.0
             cy = new_h / 2.0
             self.dot_view.setFrame_(
