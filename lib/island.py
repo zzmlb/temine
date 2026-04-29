@@ -53,12 +53,11 @@ from AppKit import (  # type: ignore[import-not-found]
     NSApplication,
     NSApp,
     NSBackingStoreBuffered,
+    NSButton,
     NSColor,
     NSEvent,
     NSFont,
     NSStatusWindowLevel,
-    NSTextField,
-    NSTextAlignmentLeft,
     NSTrackingActiveAlways,
     NSTrackingArea,
     NSTrackingInVisibleRect,
@@ -78,11 +77,16 @@ STATE_DIR = Path.home() / ".temine" / "island"
 STATE_FILE = STATE_DIR / "state.json"
 
 # 紧凑/展开**高度必须相同**，否则鼠标会在垂直方向出展开窗口边界，引发抖动
-# 这样鼠标在窗口内移动时只会触发横向尺寸变化，不会在边界跨越
 COMPACT_W, COMPACT_H = 110, 48
-EXPANDED_W, EXPANDED_H = 260, 48
+EXPANDED_W, EXPANDED_H = 200, 48
 DRAG_THRESHOLD_PX = 4
 COLLAPSE_DELAY_SEC = 0.15  # 鼠标退出后延迟收缩，防抖
+
+# 展开态两个按钮的位置（相对窗口左下角）
+BTN_SIZE = 36
+BTN_Y = (EXPANDED_H - BTN_SIZE) / 2.0  # 6
+BTN1_X = 20.0   # 按钮1：开/关控制面板
+BTN2_X = 144.0  # 按钮2：触发自动排布
 
 
 def load_state() -> dict:
@@ -149,6 +153,24 @@ def ensure_panel_running() -> bool:
             return True
         time.sleep(0.1)
     return is_panel_running()
+
+
+def trigger_arrange() -> None:
+    """调用控制面板的 /api/arrange 接口，自动排布所有终端窗口"""
+    if not ensure_panel_running():
+        return
+    try:
+        body = json.dumps({"cols": 0, "region": "full"}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{PANEL_URL}/api/arrange",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3) as r:
+            r.read()
+    except Exception as e:
+        print(f"[island] arrange failed: {e}", file=sys.stderr)
 
 
 def open_panel_window() -> None:
@@ -243,25 +265,45 @@ class IslandView(NSView):
             self.addSubview_(self.dot_view)
             print("[island] dot_view added", file=sys.stderr)
 
-            # 文字标签（默认隐藏，展开时显示）
-            self.label_view = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(40, (EXPANDED_H - 22) / 2.0, EXPANDED_W - 50, 22)
-            )
-            self.label_view.setStringValue_("Temine 控制面板")
-            self.label_view.setBezeled_(False)
-            self.label_view.setDrawsBackground_(False)
-            self.label_view.setEditable_(False)
-            self.label_view.setSelectable_(False)
-            self.label_view.setBordered_(False)
-            self.label_view.setFont_(NSFont.boldSystemFontOfSize_(14.0))
-            self.label_view.setTextColor_(NSColor.whiteColor())
-            self.label_view.setHidden_(True)
-            self.addSubview_(self.label_view)
-            print("[island] label_view added", file=sys.stderr)
+            # 按钮 1：窗口（开/关控制面板）
+            self.panel_btn = self._make_button("窗", BTN1_X, b"onClickPanel:")
+            self.addSubview_(self.panel_btn)
+
+            # 按钮 2：列（一键自动排布）
+            self.arrange_btn = self._make_button("列", BTN2_X, b"onClickArrange:")
+            self.addSubview_(self.arrange_btn)
+            print("[island] buttons added", file=sys.stderr)
         except Exception as e:
             import traceback
             print(f"[island] subviews EXCEPTION: {type(e).__name__}: {e}", file=sys.stderr)
             traceback.print_exc()
+
+    def _make_button(self, title: str, x: float, action: bytes):
+        btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(x, BTN_Y, BTN_SIZE, BTN_SIZE)
+        )
+        btn.setTitle_(title)
+        btn.setBordered_(False)
+        btn.setFont_(NSFont.boldSystemFontOfSize_(15.0))
+        btn.setWantsLayer_(True)
+        layer = btn.layer()
+        if layer is not None:
+            layer.setBackgroundColor_(
+                NSColor.colorWithWhite_alpha_(1.0, 0.12).CGColor()
+            )
+            layer.setCornerRadius_(BTN_SIZE / 2.0)
+            layer.setBorderColor_(NSColor.systemPinkColor().CGColor())
+            layer.setBorderWidth_(1.5)
+        btn.setTarget_(self)
+        btn.setAction_(action)
+        btn.setHidden_(True)
+        return btn
+
+    def onClickPanel_(self, _sender):
+        open_panel_window()
+
+    def onClickArrange_(self, _sender):
+        trigger_arrange()
 
     def viewDidMoveToWindow(self):
         try:
@@ -341,26 +383,15 @@ class IslandView(NSView):
         if layer is not None:
             layer.setCornerRadius_(new_h / 2.0)
         if expanded:
-            # 展开：圆点缩到左侧，文字显示
-            dot_size = 12.0
-            cx_dot = 20.0
-            cy = new_h / 2.0
-            self.dot_view.setFrame_(
-                NSMakeRect(
-                    cx_dot - dot_size / 2.0,
-                    cy - dot_size / 2.0,
-                    dot_size,
-                    dot_size,
-                )
-            )
-            self.dot_view.layer().setCornerRadius_(dot_size / 2.0)
-            self.label_view.setFrame_(
-                NSMakeRect(34, (new_h - 22) / 2.0, new_w - 44, 22)
-            )
-            self.label_view.setHidden_(False)
+            # 展开：圆点隐藏，两个按钮显示
+            self.dot_view.setHidden_(True)
+            self.panel_btn.setHidden_(False)
+            self.arrange_btn.setHidden_(False)
         else:
-            # 紧凑：圆点回到中央，文字隐藏
-            self.label_view.setHidden_(True)
+            # 紧凑：圆点居中，按钮隐藏
+            self.panel_btn.setHidden_(True)
+            self.arrange_btn.setHidden_(True)
+            self.dot_view.setHidden_(False)
             dot_size = 16.0
             cx = new_w / 2.0
             cy = new_h / 2.0
@@ -408,7 +439,9 @@ class IslandView(NSView):
             if win is not None:
                 origin = win.frame().origin
                 save_state({"x": float(origin.x), "y": float(origin.y)})
-        else:
+        elif not self.expanded:
+            # 紧凑态点击 = 默认动作（开/关 Chrome 面板）
+            # 展开态点击由按钮处理，IslandView 不处理 click
             open_panel_window()
         self.dragging = False
         self.drag_start_mouse_global = None
