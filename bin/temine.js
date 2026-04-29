@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { parseArgs } from 'node:util';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { openTerminals, arrangeWindows, listLayouts } from '../lib/terminal-opener.js';
 import { startWatcher, stopWatcher, showStatus } from '../lib/ai-watcher.js';
 import { labelWindow, labelAll, listWindows } from '../lib/terminal-label.js';
@@ -9,7 +12,15 @@ import { showConfig, setConfigValue, resetConfig } from '../lib/config.js';
 import { startFloat } from '../lib/float.js';
 import { startPanel } from '../lib/panel.js';
 
-const VERSION = '0.7.0';
+// 从 package.json 读取版本号，避免硬编码漂移
+const VERSION = (() => {
+  try {
+    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+    return JSON.parse(readFileSync(pkgPath, 'utf-8')).version;
+  } catch {
+    return '0.0.0';
+  }
+})();
 const args = process.argv.slice(2);
 const command = args[0];
 
