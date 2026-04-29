@@ -187,8 +187,8 @@ class IslandView(NSView):
     会触发 NSException，所以彻底避开。
     """
 
-    def init(self):  # noqa: D401 - PyObjC 风格
-        self = objc.super(IslandView, self).init()
+    def initWithFrame_(self, frame):  # noqa: D401 - PyObjC 风格
+        self = objc.super(IslandView, self).initWithFrame_(frame)
         if self is None:
             return None
         self.expanded = False
@@ -199,79 +199,96 @@ class IslandView(NSView):
         self.drag_start_mouse_global = None
         self.dot_view = None
         self.label_view = None
+        # 在 view 创建时就启用 layer-backing
+        self.setWantsLayer_(True)
+        print(f"[island] IslandView initWithFrame_ OK, frame={frame}", file=sys.stderr)
         return self
 
     def _setup_layers(self) -> None:
         """初始化主视图 layer + 子视图。仅在 viewDidMoveToWindow 调一次。"""
-        self.setWantsLayer_(True)
-        layer = self.layer()
-        if layer is None:
-            print("[island] WARNING: self.layer() is None after setWantsLayer", file=sys.stderr)
-            return
-        # 黑色胶囊背景（不透明，确保肯定可见）
-        layer.setBackgroundColor_(
-            NSColor.colorWithRed_green_blue_alpha_(0.05, 0.05, 0.08, 1.0).CGColor()
-        )
-        layer.setCornerRadius_(COMPACT_H / 2.0)
-        layer.setMasksToBounds_(True)
-        # 紫粉描边
-        layer.setBorderColor_(
-            NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0).CGColor()
-        )
-        layer.setBorderWidth_(3.0)
-        print(f"[island] _setup_layers OK, layer.bounds={layer.bounds()}", file=sys.stderr)
+        try:
+            self.setWantsLayer_(True)
+            layer = self.layer()
+            print(f"[island] _setup_layers: layer={layer}", file=sys.stderr)
+            if layer is None:
+                print("[island] WARNING: self.layer() is None after setWantsLayer", file=sys.stderr)
+                return
+            # 用系统预定义色，避免 NSColor.colorWithRed_...CGColor 在某些组合下出问题
+            layer.setBackgroundColor_(NSColor.blackColor().CGColor())
+            print("[island] backgroundColor set", file=sys.stderr)
+            layer.setCornerRadius_(COMPACT_H / 2.0)
+            layer.setMasksToBounds_(True)
+            layer.setBorderColor_(NSColor.systemPinkColor().CGColor())
+            layer.setBorderWidth_(3.0)
+            print(f"[island] _setup_layers OK, layer.bounds={layer.bounds()}", file=sys.stderr)
+        except Exception as e:
+            import traceback
+            print(f"[island] _setup_layers EXCEPTION: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc()
 
-        # 紫粉圆点子视图
-        cx = COMPACT_W / 2.0
-        cy = COMPACT_H / 2.0
-        dot_size = 26.0
-        self.dot_view = NSView.alloc().initWithFrame_(
-            NSMakeRect(cx - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size)
-        )
-        self.dot_view.setWantsLayer_(True)
-        dot_layer = self.dot_view.layer()
-        dot_layer.setBackgroundColor_(
-            NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0).CGColor()
-        )
-        dot_layer.setCornerRadius_(dot_size / 2.0)
-        self.addSubview_(self.dot_view)
+        try:
+            # 紫粉圆点子视图
+            cx = COMPACT_W / 2.0
+            cy = COMPACT_H / 2.0
+            dot_size = 26.0
+            self.dot_view = NSView.alloc().initWithFrame_(
+                NSMakeRect(cx - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size)
+            )
+            self.dot_view.setWantsLayer_(True)
+            dot_layer = self.dot_view.layer()
+            if dot_layer is not None:
+                dot_layer.setBackgroundColor_(NSColor.systemPinkColor().CGColor())
+                dot_layer.setCornerRadius_(dot_size / 2.0)
+            self.addSubview_(self.dot_view)
+            print("[island] dot_view added", file=sys.stderr)
 
-        # 文字标签（默认隐藏，展开时显示）
-        self.label_view = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(48, (EXPANDED_H - 24) / 2.0, EXPANDED_W - 56, 24)
-        )
-        self.label_view.setStringValue_("Temine 控制面板")
-        self.label_view.setBezeled_(False)
-        self.label_view.setDrawsBackground_(False)
-        self.label_view.setEditable_(False)
-        self.label_view.setSelectable_(False)
-        self.label_view.setBordered_(False)
-        self.label_view.setFont_(NSFont.boldSystemFontOfSize_(14.0))
-        self.label_view.setTextColor_(NSColor.colorWithWhite_alpha_(0.98, 1.0))
-        self.label_view.setAlignment_(NSTextAlignmentLeft)
-        self.label_view.setHidden_(True)
-        self.addSubview_(self.label_view)
+            # 文字标签（默认隐藏，展开时显示）
+            self.label_view = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(48, (EXPANDED_H - 24) / 2.0, EXPANDED_W - 56, 24)
+            )
+            self.label_view.setStringValue_("Temine 控制面板")
+            self.label_view.setBezeled_(False)
+            self.label_view.setDrawsBackground_(False)
+            self.label_view.setEditable_(False)
+            self.label_view.setSelectable_(False)
+            self.label_view.setBordered_(False)
+            self.label_view.setFont_(NSFont.boldSystemFontOfSize_(14.0))
+            self.label_view.setTextColor_(NSColor.whiteColor())
+            self.label_view.setHidden_(True)
+            self.addSubview_(self.label_view)
+            print("[island] label_view added", file=sys.stderr)
+        except Exception as e:
+            import traceback
+            print(f"[island] subviews EXCEPTION: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc()
 
     def viewDidMoveToWindow(self):
-        objc.super(IslandView, self).viewDidMoveToWindow()
-        if self.window() is None:
-            return
-        if not self.tracking_area_added:
-            opts = (
-                NSTrackingMouseEnteredAndExited
-                | NSTrackingActiveAlways
-                | NSTrackingInVisibleRect
-            )
-            ta = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
-                ((0.0, 0.0), (0.0, 0.0)),
-                opts,
-                self,
-                None,
-            )
-            self.addTrackingArea_(ta)
-            self.tracking_area_added = True
-        if self.dot_view is None:
-            self._setup_layers()
+        try:
+            objc.super(IslandView, self).viewDidMoveToWindow()
+            print(f"[island] viewDidMoveToWindow called, window={self.window()}", file=sys.stderr)
+            if self.window() is None:
+                return
+            if not self.tracking_area_added:
+                opts = (
+                    NSTrackingMouseEnteredAndExited
+                    | NSTrackingActiveAlways
+                    | NSTrackingInVisibleRect
+                )
+                ta = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+                    ((0.0, 0.0), (0.0, 0.0)),
+                    opts,
+                    self,
+                    None,
+                )
+                self.addTrackingArea_(ta)
+                self.tracking_area_added = True
+                print("[island] tracking area added", file=sys.stderr)
+            if self.dot_view is None:
+                self._setup_layers()
+        except Exception as e:
+            import traceback
+            print(f"[island] viewDidMoveToWindow EXCEPTION: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc()
 
     def acceptsFirstMouse_(self, _event):
         return True
@@ -401,33 +418,42 @@ class AppDelegate(NSObject):
         print(f"[island] screen visible={visible}", file=sys.stderr)
         print(f"[island] window will be at x={x} y={y} w={COMPACT_W} h={COMPACT_H}", file=sys.stderr)
 
-        self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            rect,
-            NSWindowStyleMaskBorderless,
-            NSBackingStoreBuffered,
-            False,
-        )
-        self.window.setBackgroundColor_(NSColor.clearColor())
-        self.window.setOpaque_(False)
-        self.window.setHasShadow_(True)
-        self.window.setLevel_(NSStatusWindowLevel)
-        self.window.setCollectionBehavior_(
-            NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehaviorStationary
-            | NSWindowCollectionBehaviorFullScreenAuxiliary
-        )
-        self.window.setIgnoresMouseEvents_(False)
-        self.window.setMovable_(False)  # 自己处理拖拽
+        try:
+            self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+                rect,
+                NSWindowStyleMaskBorderless,
+                NSBackingStoreBuffered,
+                False,
+            )
+            print(f"[island] NSWindow created: {self.window}", file=sys.stderr)
+            self.window.setBackgroundColor_(NSColor.clearColor())
+            self.window.setOpaque_(False)
+            self.window.setHasShadow_(True)
+            self.window.setLevel_(NSStatusWindowLevel)
+            self.window.setCollectionBehavior_(
+                NSWindowCollectionBehaviorCanJoinAllSpaces
+                | NSWindowCollectionBehaviorStationary
+                | NSWindowCollectionBehaviorFullScreenAuxiliary
+            )
+            self.window.setIgnoresMouseEvents_(False)
+            self.window.setMovable_(False)
+            print("[island] window props set, creating view…", file=sys.stderr)
 
-        view = IslandView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, COMPACT_W, COMPACT_H)
-        )
-        self.window.setContentView_(view)
-        self.window.makeKeyAndOrderFront_(None)
-        # 强制聚焦让窗口立即出现在最前
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-        actual_frame = self.window.frame()
-        print(f"[island] window actual frame={actual_frame} visible={self.window.isVisible()}", file=sys.stderr)
+            view = IslandView.alloc().initWithFrame_(
+                NSMakeRect(0, 0, COMPACT_W, COMPACT_H)
+            )
+            print(f"[island] view created: {view}", file=sys.stderr)
+            self.window.setContentView_(view)
+            print("[island] setContentView OK", file=sys.stderr)
+            self.window.makeKeyAndOrderFront_(None)
+            print("[island] makeKeyAndOrderFront OK", file=sys.stderr)
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            actual_frame = self.window.frame()
+            print(f"[island] window actual frame={actual_frame} visible={self.window.isVisible()}", file=sys.stderr)
+        except Exception as e:
+            import traceback
+            print(f"[island] applicationDidFinishLaunching EXCEPTION: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc()
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, _sender):
         return True

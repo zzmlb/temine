@@ -1,6 +1,6 @@
 {
   "name": "temine",
-  "version": "0.9.7",
+  "version": "0.9.8",
   "description": "Terminal management tool for AI coding workflows. Manage multiple Claude Code / AI CLI windows with smart arrangement, status detection, notifications and web dashboard.",
   "type": "module",
   "bin": {
