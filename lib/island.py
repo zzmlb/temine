@@ -193,16 +193,10 @@ class IslandView(NSView):
         self.drag_moved = False
         self.drag_start_window_origin = None
         self.drag_start_mouse_global = None
-        # 动画相关
-        self.phase = 0.0
-        self.start_flash_until = time.time() + 2.5  # 启动后 2.5 秒疯狂闪烁吸引视线
-        self.anim_timer = None
         return self
 
     def viewDidMoveToWindow(self):
         objc.super(IslandView, self).viewDidMoveToWindow()
-        # 仅在视图首次进入窗口时一次性加 tracking area
-        # NSTrackingInVisibleRect 让 AppKit 自动跟随视图大小，不需要手动重建
         if not self.tracking_area_added and self.window() is not None:
             opts = (
                 NSTrackingMouseEnteredAndExited
@@ -210,22 +204,13 @@ class IslandView(NSView):
                 | NSTrackingInVisibleRect
             )
             ta = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
-                ((0.0, 0.0), (0.0, 0.0)),  # rect 在 InVisibleRect 模式下被忽略
+                ((0.0, 0.0), (0.0, 0.0)),
                 opts,
                 self,
                 None,
             )
             self.addTrackingArea_(ta)
             self.tracking_area_added = True
-        # 启动呼吸动画定时器
-        if self.anim_timer is None:
-            self.anim_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                1.0 / ANIM_FPS, self, b"tick:", None, True
-            )
-
-    def tick_(self, _timer):
-        self.phase = (self.phase + 1.0 / ANIM_FPS) % 100.0
-        self.setNeedsDisplay_(True)
 
     def acceptsFirstMouse_(self, _event):
         return True
@@ -300,95 +285,48 @@ class IslandView(NSView):
         NSApplication.sharedApplication().terminate_(None)
 
     def drawRect_(self, _rect):
-        import math
-
+        # 极简版：只画黑色圆胶囊 + 紫粉圆点 + 文字（展开时）
+        # 不用 NSGradient、不用动画、不用 halo——这些在 PyObjC 12 + macOS 15 下不稳定
         bounds = self.bounds()
         radius = bounds.size.height / 2.0
 
-        # 启动后 2.5 秒：每秒闪烁 5 次（脉冲），让用户绝对找得到
-        now = time.time()
-        flashing = now < self.start_flash_until
-        flash_intensity = 0.0
-        if flashing:
-            flash_intensity = abs(math.sin(now * 5.0 * math.pi))
-
-        # 呼吸相位：0..1
-        breathe = 0.5 + 0.5 * math.sin(self.phase * math.pi * 1.2)
-
-        # === 外层发光 halo —— 让按钮在远处也能被注意到 ===
-        # 用多层径向圆叠加模拟发光（PyObjC 没有直接的 box-shadow）
-        cx = bounds.size.width / 2.0
-        cy = bounds.size.height / 2.0
-        halo_intensity = 0.35 + 0.25 * breathe + 0.4 * flash_intensity
-        for i in range(6, 0, -1):
-            alpha = halo_intensity * (i / 6.0) * 0.18
-            halo_radius = radius + i * 6
-            halo_rect = NSMakeRect(
-                cx - halo_radius, cy - halo_radius, halo_radius * 2, halo_radius * 2
-            )
-            halo_path = NSBezierPath.bezierPathWithOvalInRect_(halo_rect)
-            NSColor.colorWithRed_green_blue_alpha_(0.93, 0.28, 0.60, alpha).setFill()
-            halo_path.fill()
-
-        # === 主胶囊背景 ===
+        # 黑色胶囊背景
         path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             bounds, radius, radius
         )
-        if self.expanded:
-            grad = NSGradient.alloc().initWithStartingColor_endingColor_(
-                NSColor.colorWithRed_green_blue_alpha_(0.05, 0.04, 0.08, 0.98),
-                NSColor.colorWithRed_green_blue_alpha_(0.10, 0.06, 0.16, 0.98),
-            )
-            grad.drawInBezierPath_angle_(path, 135.0)
-        else:
-            NSColor.colorWithRed_green_blue_alpha_(0.03, 0.02, 0.04, 0.97).setFill()
-            path.fill()
-        # 高光描边（启动闪烁时变亮）
-        path.setLineWidth_(1.5 + flash_intensity * 1.5)
-        edge_alpha = 0.12 + 0.4 * flash_intensity + 0.15 * breathe
-        NSColor.colorWithRed_green_blue_alpha_(1.0, 0.5, 0.8, edge_alpha).setStroke()
+        NSColor.colorWithRed_green_blue_alpha_(0.04, 0.03, 0.06, 0.97).setFill()
+        path.fill()
+
+        # 紫粉描边（增加可见性）
+        NSColor.colorWithRed_green_blue_alpha_(0.93, 0.28, 0.60, 0.55).setStroke()
+        path.setLineWidth_(2.0)
         path.stroke()
 
+        cx = bounds.size.width / 2.0
+        cy = bounds.size.height / 2.0
+
         if not self.expanded:
-            # 紧凑态：放大的中央紫粉光球（呼吸 + 闪烁）
-            dot_size = 22.0 + 4.0 * breathe + 6.0 * flash_intensity
+            # 紧凑态：中央紫粉圆点
+            dot_size = 24.0
             dot_rect = NSMakeRect(
                 cx - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size
             )
             dot_path = NSBezierPath.bezierPathWithOvalInRect_(dot_rect)
-            grad = NSGradient.alloc().initWithStartingColor_endingColor_(
-                NSColor.colorWithRed_green_blue_alpha_(0.55, 0.55, 1.0, 1.0),  # 浅紫
-                NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0),  # 亮粉
-            )
-            grad.drawInBezierPath_angle_(dot_path, 135.0)
-            # 内部高光小点（让球看起来"湿润"）
-            hl_size = dot_size * 0.35
-            hl_rect = NSMakeRect(
-                cx - hl_size / 2.0 - dot_size * 0.15,
-                cy + dot_size * 0.10,
-                hl_size,
-                hl_size,
-            )
-            hl_path = NSBezierPath.bezierPathWithOvalInRect_(hl_rect)
-            NSColor.colorWithWhite_alpha_(1.0, 0.55).setFill()
-            hl_path.fill()
+            NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0).setFill()
+            dot_path.fill()
         else:
             # 展开态：左侧光点 + 文字
             cx_dot = 22.0
-            cy_d = bounds.size.height / 2.0
-            dot_size = 14.0 + 2.0 * breathe
+            dot_size = 14.0
             dot_rect = NSMakeRect(
-                cx_dot - dot_size / 2.0, cy_d - dot_size / 2.0, dot_size, dot_size
+                cx_dot - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size
             )
             dot_path = NSBezierPath.bezierPathWithOvalInRect_(dot_rect)
-            grad = NSGradient.alloc().initWithStartingColor_endingColor_(
-                NSColor.colorWithRed_green_blue_alpha_(0.55, 0.55, 1.0, 1.0),
-                NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0),
-            )
-            grad.drawInBezierPath_angle_(dot_path, 135.0)
+            NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0).setFill()
+            dot_path.fill()
 
             # 文字
-            font = NSFont.boldSystemFontOfSize_(15.0)
+            font = NSFont.boldSystemFontOfSize_(14.0)
             text = "Temine 控制面板"
             attrs = {
                 NSForegroundColorAttributeName: NSColor.colorWithWhite_alpha_(0.98, 1.0),
