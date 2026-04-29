@@ -11,7 +11,8 @@
     "lib/"
   ],
   "scripts": {
-    "start": "node bin/temine.js"
+    "start": "node bin/temine.js",
+    "check": "bash scripts/pre-push-check.sh"
   },
   "engines": {
     "node": ">=18.0.0"
