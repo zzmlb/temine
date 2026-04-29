@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""
+TemineIsland —— 桌面悬浮灵动岛按钮（独立常驻进程，不依赖 Chrome）
+
+行为：
+  * 紧凑态：48x48 黑色圆胶囊，中央紫粉光点，置顶、跨工作区可见
+  * 鼠标悬停：展开为 130x52 横向胶囊（白字 "Temine"）
+  * 点击：调用 Chrome --app=http://localhost:7890 唤出控制面板
+  * 拖拽：移动位置，记忆下次启动
+  * 右键：退出
+
+依赖：pyobjc-core, pyobjc-framework-Cocoa
+   pip3 install --user pyobjc-core pyobjc-framework-Cocoa
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+import objc  # type: ignore[import-not-found]
+from AppKit import (  # type: ignore[import-not-found]
+    NSApplication,
+    NSApp,
+    NSAttributedString,
+    NSBackingStoreBuffered,
+    NSBezierPath,
+    NSColor,
+    NSEvent,
+    NSFont,
+    NSFontAttributeName,
+    NSForegroundColorAttributeName,
+    NSGradient,
+    NSStatusWindowLevel,
+    NSTrackingActiveAlways,
+    NSTrackingArea,
+    NSTrackingInVisibleRect,
+    NSTrackingMouseEnteredAndExited,
+    NSView,
+    NSWindow,
+    NSWindowCollectionBehaviorCanJoinAllSpaces,
+    NSWindowCollectionBehaviorFullScreenAuxiliary,
+    NSWindowCollectionBehaviorStationary,
+    NSWindowStyleMaskBorderless,
+)
+from Foundation import NSMakeRect, NSObject, NSPoint  # type: ignore[import-not-found]
+
+PORT = 7890
+PANEL_URL = f"http://localhost:{PORT}"
+STATE_DIR = Path.home() / ".temine" / "island"
+STATE_FILE = STATE_DIR / "state.json"
+
+COMPACT_W, COMPACT_H = 48, 48
+EXPANDED_W, EXPANDED_H = 140, 54
+DRAG_THRESHOLD_PX = 4
+
+
+def load_state() -> dict:
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def save_state(state: dict) -> None:
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(json.dumps(state))
+    except Exception:
+        pass
+
+
+def is_panel_running() -> bool:
+    try:
+        with urllib.request.urlopen(PANEL_URL, timeout=1) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def find_temine_bin() -> str | None:
+    """查找 temine 命令的绝对路径"""
+    for candidate in ("/usr/local/bin/temine", "/opt/homebrew/bin/temine"):
+        if os.path.exists(candidate):
+            return candidate
+    try:
+        out = subprocess.check_output(
+            ["which", "temine"], encoding="utf-8", stderr=subprocess.DEVNULL
+        ).strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    return None
+
+
+def ensure_panel_running() -> bool:
+    """启动 panel server（如果未运行），等待就绪"""
+    if is_panel_running():
+        return True
+    bin_path = find_temine_bin()
+    if not bin_path:
+        return False
+    env = os.environ.copy()
+    env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:" + env.get("PATH", "")
+    try:
+        subprocess.Popen(
+            [bin_path, "panel", str(PORT)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            env=env,
+        )
+    except Exception:
+        return False
+    for _ in range(50):
+        if is_panel_running():
+            return True
+        time.sleep(0.1)
+    return is_panel_running()
+
+
+def open_panel_window() -> None:
+    """启动 panel server 并用 Chrome app-mode 打开"""
+    ensure_panel_running()
+    chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    edge = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+    try:
+        if os.path.exists(chrome):
+            subprocess.Popen(
+                [chrome, f"--app={PANEL_URL}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        elif os.path.exists(edge):
+            subprocess.Popen(
+                [edge, f"--app={PANEL_URL}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        else:
+            subprocess.Popen(["open", PANEL_URL])
+    except Exception:
+        pass
+
+
+# pylint: disable=invalid-name
+class IslandView(NSView):
+    """灵动岛自定义 NSView：渲染胶囊、捕获鼠标"""
+
+    def init(self):  # noqa: D401 - PyObjC 风格
+        self = objc.super(IslandView, self).init()
+        if self is None:
+            return None
+        self.expanded = False
+        self.tracking_area = None
+        self.dragging = False
+        self.drag_moved = False
+        self.drag_start_window_origin = None
+        self.drag_start_mouse_global = None
+        return self
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    def updateTrackingAreas(self):
+        if self.tracking_area is not None:
+            self.removeTrackingArea_(self.tracking_area)
+        opts = (
+            NSTrackingMouseEnteredAndExited
+            | NSTrackingActiveAlways
+            | NSTrackingInVisibleRect
+        )
+        self.tracking_area = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+            self.bounds(), opts, self, None
+        )
+        self.addTrackingArea_(self.tracking_area)
+
+    def mouseEntered_(self, _event):
+        self._set_expanded(True)
+
+    def mouseExited_(self, _event):
+        if not self.dragging:
+            self._set_expanded(False)
+
+    def _set_expanded(self, expanded: bool) -> None:
+        if expanded == self.expanded:
+            return
+        self.expanded = expanded
+        win = self.window()
+        if win is None:
+            return
+        new_w = EXPANDED_W if expanded else COMPACT_W
+        new_h = EXPANDED_H if expanded else COMPACT_H
+        cur = win.frame()
+        new_x = cur.origin.x + (cur.size.width - new_w) / 2.0
+        new_y = cur.origin.y + (cur.size.height - new_h) / 2.0
+        win.setFrame_display_animate_(
+            NSMakeRect(new_x, new_y, new_w, new_h), True, True
+        )
+        self.setFrameSize_((new_w, new_h))
+        self.setNeedsDisplay_(True)
+
+    def mouseDown_(self, _event):
+        win = self.window()
+        if win is None:
+            return
+        self.dragging = True
+        self.drag_moved = False
+        self.drag_start_window_origin = win.frame().origin
+        self.drag_start_mouse_global = NSEvent.mouseLocation()
+
+    def mouseDragged_(self, _event):
+        if not self.dragging or self.drag_start_mouse_global is None:
+            return
+        cur = NSEvent.mouseLocation()
+        dx = cur.x - self.drag_start_mouse_global.x
+        dy = cur.y - self.drag_start_mouse_global.y
+        if not self.drag_moved and (
+            abs(dx) > DRAG_THRESHOLD_PX or abs(dy) > DRAG_THRESHOLD_PX
+        ):
+            self.drag_moved = True
+        win = self.window()
+        if win is None:
+            return
+        new_origin = NSPoint(
+            self.drag_start_window_origin.x + dx,
+            self.drag_start_window_origin.y + dy,
+        )
+        win.setFrameOrigin_(new_origin)
+
+    def mouseUp_(self, _event):
+        if self.drag_moved:
+            win = self.window()
+            if win is not None:
+                origin = win.frame().origin
+                save_state({"x": float(origin.x), "y": float(origin.y)})
+        else:
+            open_panel_window()
+        self.dragging = False
+        self.drag_start_mouse_global = None
+        self.drag_moved = False
+
+    def rightMouseDown_(self, _event):
+        # 右键 = 退出灵动岛
+        NSApplication.sharedApplication().terminate_(None)
+
+    def drawRect_(self, _rect):
+        bounds = self.bounds()
+        radius = bounds.size.height / 2.0
+        # 黑色胶囊背景
+        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            bounds, radius, radius
+        )
+        if self.expanded:
+            # 展开：稍亮的紫黑渐变
+            grad = NSGradient.alloc().initWithStartingColor_endingColor_(
+                NSColor.colorWithRed_green_blue_alpha_(0.04, 0.04, 0.06, 0.97),
+                NSColor.colorWithRed_green_blue_alpha_(0.08, 0.06, 0.12, 0.97),
+            )
+            grad.drawInBezierPath_angle_(path, 135.0)
+        else:
+            NSColor.colorWithRed_green_blue_alpha_(0.02, 0.02, 0.03, 0.95).setFill()
+            path.fill()
+        # 高光描边
+        path.setLineWidth_(1.0)
+        NSColor.colorWithWhite_alpha_(1.0, 0.07).setStroke()
+        path.stroke()
+
+        if not self.expanded:
+            # 紧凑态：中央紫粉光点
+            cx = bounds.size.width / 2.0
+            cy = bounds.size.height / 2.0
+            dot_size = 11.0
+            dot_rect = NSMakeRect(
+                cx - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size
+            )
+            dot_path = NSBezierPath.bezierPathWithOvalInRect_(dot_rect)
+            grad = NSGradient.alloc().initWithStartingColor_endingColor_(
+                NSColor.colorWithRed_green_blue_alpha_(0.39, 0.40, 0.95, 1.0),
+                NSColor.colorWithRed_green_blue_alpha_(0.93, 0.28, 0.60, 1.0),
+            )
+            grad.drawInBezierPath_angle_(dot_path, 135.0)
+        else:
+            # 展开态：左侧光点 + "Temine" 文字
+            cx_dot = 18.0
+            cy = bounds.size.height / 2.0
+            dot_size = 9.0
+            dot_rect = NSMakeRect(
+                cx_dot - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size
+            )
+            dot_path = NSBezierPath.bezierPathWithOvalInRect_(dot_rect)
+            grad = NSGradient.alloc().initWithStartingColor_endingColor_(
+                NSColor.colorWithRed_green_blue_alpha_(0.39, 0.40, 0.95, 1.0),
+                NSColor.colorWithRed_green_blue_alpha_(0.93, 0.28, 0.60, 1.0),
+            )
+            grad.drawInBezierPath_angle_(dot_path, 135.0)
+
+            # 文字
+            font = NSFont.systemFontOfSize_weight_(13.0, 0.3)
+            text = "Temine 控制面板"
+            attrs = {
+                NSForegroundColorAttributeName: NSColor.colorWithWhite_alpha_(
+                    0.97, 1.0
+                ),
+                NSFontAttributeName: font,
+            }
+            astr = NSAttributedString.alloc().initWithString_attributes_(text, attrs)
+            sz = astr.size()
+            tx = cx_dot + dot_size / 2.0 + 8.0
+            ty = (bounds.size.height - sz.height) / 2.0
+            astr.drawAtPoint_(NSPoint(tx, ty))
+
+
+# pylint: disable=invalid-name
+class AppDelegate(NSObject):
+    def applicationDidFinishLaunching_(self, _notification):
+        state = load_state()
+        # 默认放在屏幕右侧偏上
+        from AppKit import NSScreen  # type: ignore[import-not-found]
+
+        screen = NSScreen.mainScreen()
+        visible = screen.visibleFrame() if screen else None
+        if visible:
+            default_x = visible.origin.x + visible.size.width - COMPACT_W - 24
+            default_y = visible.origin.y + visible.size.height - COMPACT_H - 80
+        else:
+            default_x, default_y = 1200, 600
+        x = float(state.get("x", default_x))
+        y = float(state.get("y", default_y))
+        rect = NSMakeRect(x, y, COMPACT_W, COMPACT_H)
+
+        self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect,
+            NSWindowStyleMaskBorderless,
+            NSBackingStoreBuffered,
+            False,
+        )
+        self.window.setBackgroundColor_(NSColor.clearColor())
+        self.window.setOpaque_(False)
+        self.window.setHasShadow_(True)
+        self.window.setLevel_(NSStatusWindowLevel)
+        self.window.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorStationary
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+        )
+        self.window.setIgnoresMouseEvents_(False)
+        self.window.setMovable_(False)  # 自己处理拖拽
+
+        view = IslandView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, COMPACT_W, COMPACT_H)
+        )
+        self.window.setContentView_(view)
+        self.window.makeKeyAndOrderFront_(None)
+
+    def applicationShouldTerminateAfterLastWindowClosed_(self, _sender):
+        return True
+
+
+def main() -> None:
+    # 防止重复启动：用 PID 文件
+    pid_file = STATE_DIR / "island.pid"
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if pid_file.exists():
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 0)
+                # 旧进程仍在跑，退出
+                print("TemineIsland 已经在运行 (pid=%d)" % old_pid, file=sys.stderr)
+                return
+            except Exception:
+                pass
+        pid_file.write_text(str(os.getpid()))
+    except Exception:
+        pass
+
+    app = NSApplication.sharedApplication()
+    delegate = AppDelegate.alloc().init()
+    app.setDelegate_(delegate)
+    app.activateIgnoringOtherApps_(True)
+    try:
+        app.run()
+    finally:
+        try:
+            pid_file.unlink()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    main()

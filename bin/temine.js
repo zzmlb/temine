@@ -280,6 +280,138 @@ end run
     break;
   }
 
+  case 'island': {
+    // 桌面悬浮灵动岛（Python + PyObjC）
+    if (process.platform !== 'darwin') {
+      console.log('❌ temine island 仅支持 macOS');
+      break;
+    }
+    const sub = args[1];
+    const { execSync: ex } = await import('node:child_process');
+    const { mkdirSync, copyFileSync, existsSync: ex2, rmSync, writeFileSync, readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { join, dirname } = await import('node:path');
+
+    const HOME = process.env.HOME;
+    const ISLAND_DIR = `${HOME}/.temine/island`;
+    const ISLAND_PY = `${ISLAND_DIR}/island.py`;
+    const PID_FILE = `${ISLAND_DIR}/island.pid`;
+    const APP_DIR = args.includes('--global')
+      ? '/Applications/TemineIsland.app'
+      : `${HOME}/Applications/TemineIsland.app`;
+
+    // 子命令 stop：终止运行中的灵动岛
+    if (sub === 'stop') {
+      if (ex2(PID_FILE)) {
+        try {
+          const pid = parseInt(readFileSync(PID_FILE, 'utf-8').trim());
+          if (pid) { process.kill(pid, 'SIGTERM'); console.log(`✅ 已停止 (pid=${pid})`); }
+        } catch (e) { console.log(`⚠️  停止失败: ${e.message}`); }
+        try { rmSync(PID_FILE); } catch {}
+      } else {
+        console.log('未发现运行中的灵动岛');
+      }
+      break;
+    }
+
+    // 子命令 uninstall：移除 .app 和脚本
+    if (sub === 'uninstall') {
+      try { if (ex2(APP_DIR)) rmSync(APP_DIR, { recursive: true }); } catch {}
+      try { if (ex2(ISLAND_DIR)) rmSync(ISLAND_DIR, { recursive: true }); } catch {}
+      console.log('✅ 已卸载 TemineIsland');
+      break;
+    }
+
+    // 默认：安装 + 启动
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const SRC_PY = join(__dirname, '..', 'lib', 'island.py');
+    if (!ex2(SRC_PY)) {
+      console.log(`❌ 找不到 island.py: ${SRC_PY}`);
+      break;
+    }
+
+    // 1. 检查 python3
+    let py3;
+    try { py3 = ex('which python3', { encoding: 'utf-8' }).trim(); }
+    catch { console.log('❌ 未找到 python3，请先安装：xcode-select --install'); break; }
+
+    // 2. 检查 pyobjc
+    let needPip = false;
+    try {
+      ex(`${py3} -c "import objc, AppKit"`, { stdio: 'ignore' });
+    } catch {
+      needPip = true;
+    }
+    if (needPip) {
+      console.log('📦 安装依赖 pyobjc-core / pyobjc-framework-Cocoa（首次约 1-3 分钟）…');
+      try {
+        ex(`${py3} -m pip install --user pyobjc-core pyobjc-framework-Cocoa`, { stdio: 'inherit' });
+      } catch (e) {
+        console.log(`❌ pip 安装失败：${e.message}`);
+        console.log(`   手动跑：${py3} -m pip install --user pyobjc-core pyobjc-framework-Cocoa`);
+        break;
+      }
+    }
+
+    // 3. 复制 island.py 到 ~/.temine/island/
+    mkdirSync(ISLAND_DIR, { recursive: true });
+    copyFileSync(SRC_PY, ISLAND_PY);
+
+    // 4. osacompile 一个 .app 壳，双击启动 python 进程
+    const parentDir = APP_DIR.replace(/\/[^/]+$/, '');
+    mkdirSync(parentDir, { recursive: true });
+    if (ex2(APP_DIR)) rmSync(APP_DIR, { recursive: true });
+    const launchScript = `
+on run
+  set pyScript to "${ISLAND_PY}"
+  -- 后台启动，立即返回（脚本本身只是启动器）
+  do shell script "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$PATH; nohup ${py3} " & quoted form of pyScript & " > /dev/null 2>&1 &"
+end run
+`;
+    const tmpScript = '/tmp/temine-island.applescript';
+    writeFileSync(tmpScript, launchScript);
+    try {
+      ex(`osacompile -o "${APP_DIR}" "${tmpScript}"`);
+    } catch (e) {
+      console.log(`❌ 生成 .app 失败：${e.message}`);
+      break;
+    }
+
+    // 5. 立即启动一次（如未在跑）
+    let alreadyRunning = false;
+    if (ex2(PID_FILE)) {
+      try {
+        const pid = parseInt(readFileSync(PID_FILE, 'utf-8').trim());
+        process.kill(pid, 0);
+        alreadyRunning = true;
+      } catch {}
+    }
+    if (!alreadyRunning) {
+      const { spawn } = await import('node:child_process');
+      const child = spawn(py3, [ISLAND_PY], { detached: true, stdio: 'ignore' });
+      child.unref();
+    }
+
+    console.log('');
+    console.log('✅ TemineIsland 已安装并启动');
+    console.log(`   .app:    ${APP_DIR}`);
+    console.log(`   脚本:    ${ISLAND_PY}`);
+    console.log('');
+    console.log('   使用：');
+    console.log('   • 屏幕右上角应该出现一个紫粉光点 = 灵动岛');
+    console.log('   • 鼠标悬停 → 展开胶囊');
+    console.log('   • 单击 → 调起 Chrome 控制面板');
+    console.log('   • 拖拽 → 移动位置（自动记忆）');
+    console.log('   • 右键 → 退出灵动岛');
+    console.log('');
+    console.log('   开机自启动：到 系统设置 → 通用 → 登录项 添加 TemineIsland.app');
+    console.log('   停止运行：  temine island stop');
+    console.log('   完全卸载：  temine island uninstall');
+    console.log('');
+    break;
+  }
+
   case '--help':
   case '-h': {
     printHelp();
@@ -318,6 +450,9 @@ function printHelp() {
     temine float                         终端内状态面板
     temine panel [端口]                   打开 Web 控制面板（默认 7890）
     temine app [端口] [--global]          生成 macOS .app 快捷方式到 Dock
+    temine island [--global]              桌面悬浮灵动岛按钮（独立常驻）
+    temine island stop                    停止运行中的灵动岛
+    temine island uninstall               卸载灵动岛 .app 和脚本
 
   历史记录:
     temine log list                      列出记录的会话
