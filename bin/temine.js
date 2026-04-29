@@ -365,14 +365,24 @@ end run
     }
     if (needPip) {
       console.log('📦 安装依赖 pyobjc-core / pyobjc-framework-Cocoa 到系统 Python（首次约 1-3 分钟）…');
+      const baseCmd = `${py3} -m pip install --user pyobjc-core pyobjc-framework-Cocoa`;
+      let pipOk = false;
       try {
-        // --user 装到 ~/Library/Python/X.Y/lib，不污染系统目录、无需 sudo
-        ex(`${py3} -m pip install --user --break-system-packages pyobjc-core pyobjc-framework-Cocoa`, { stdio: 'inherit' });
-      } catch (e) {
-        console.log(`❌ pip 安装失败：${e.message}`);
-        console.log(`   手动跑：${py3} -m pip install --user --break-system-packages pyobjc-core pyobjc-framework-Cocoa`);
-        break;
+        // 优先：不带 --break-system-packages（系统 Python 通常不需要）
+        ex(baseCmd, { stdio: 'inherit' });
+        pipOk = true;
+      } catch {
+        // 兜底：PEP 668 标记的 Python（如 brew 装的）需要 --break-system-packages
+        try {
+          ex(`${baseCmd} --break-system-packages`, { stdio: 'inherit' });
+          pipOk = true;
+        } catch (e) {
+          console.log(`❌ pip 安装失败：${e.message}`);
+          console.log(`   手动跑：${baseCmd}`);
+          break;
+        }
       }
+      if (!pipOk) break;
     }
 
     // 3. 复制 island.py 到 ~/.temine/island/
