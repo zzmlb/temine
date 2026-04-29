@@ -206,18 +206,20 @@ class IslandView(NSView):
         self.setWantsLayer_(True)
         layer = self.layer()
         if layer is None:
+            print("[island] WARNING: self.layer() is None after setWantsLayer", file=sys.stderr)
             return
-        # 黑色胶囊背景
+        # 黑色胶囊背景（不透明，确保肯定可见）
         layer.setBackgroundColor_(
-            NSColor.colorWithRed_green_blue_alpha_(0.04, 0.03, 0.06, 0.97).CGColor()
+            NSColor.colorWithRed_green_blue_alpha_(0.05, 0.05, 0.08, 1.0).CGColor()
         )
         layer.setCornerRadius_(COMPACT_H / 2.0)
         layer.setMasksToBounds_(True)
         # 紫粉描边
         layer.setBorderColor_(
-            NSColor.colorWithRed_green_blue_alpha_(0.93, 0.28, 0.60, 0.7).CGColor()
+            NSColor.colorWithRed_green_blue_alpha_(0.99, 0.35, 0.70, 1.0).CGColor()
         )
-        layer.setBorderWidth_(2.0)
+        layer.setBorderWidth_(3.0)
+        print(f"[island] _setup_layers OK, layer.bounds={layer.bounds()}", file=sys.stderr)
 
         # 紫粉圆点子视图
         cx = COMPACT_W / 2.0
@@ -396,6 +398,8 @@ class AppDelegate(NSObject):
         x = float(state.get("x", default_x))
         y = float(state.get("y", default_y))
         rect = NSMakeRect(x, y, COMPACT_W, COMPACT_H)
+        print(f"[island] screen visible={visible}", file=sys.stderr)
+        print(f"[island] window will be at x={x} y={y} w={COMPACT_W} h={COMPACT_H}", file=sys.stderr)
 
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             rect,
@@ -420,6 +424,10 @@ class AppDelegate(NSObject):
         )
         self.window.setContentView_(view)
         self.window.makeKeyAndOrderFront_(None)
+        # 强制聚焦让窗口立即出现在最前
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        actual_frame = self.window.frame()
+        print(f"[island] window actual frame={actual_frame} visible={self.window.isVisible()}", file=sys.stderr)
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, _sender):
         return True
