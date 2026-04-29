@@ -200,6 +200,7 @@ class IslandView(NSView):
         return self
 
     def viewDidMoveToWindow(self):
+        objc.super(IslandView, self).viewDidMoveToWindow()
         # 启动定时器驱动呼吸动画
         if self.anim_timer is None:
             self.anim_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -214,6 +215,9 @@ class IslandView(NSView):
         return True
 
     def updateTrackingAreas(self):
+        # NSView 文档要求子类先调 super.updateTrackingAreas()，否则 AppKit 在
+        # macOS 14+ 会抛 NSInternalInconsistencyException 并 crash 进程
+        objc.super(IslandView, self).updateTrackingAreas()
         if self.tracking_area is not None:
             self.removeTrackingArea_(self.tracking_area)
         opts = (
@@ -445,6 +449,16 @@ class AppDelegate(NSObject):
 
 
 def main() -> None:
+    # 关闭"NSException 直接 crash 进程"行为，让 Python 异常能正常 traceback
+    try:
+        from AppKit import NSUserDefaults  # type: ignore[import-not-found]
+
+        NSUserDefaults.standardUserDefaults().setBool_forKey_(
+            False, "NSApplicationCrashOnExceptions"
+        )
+    except Exception:
+        pass
+
     # 防止重复启动：用 PID 文件
     pid_file = STATE_DIR / "island.pid"
     try:
