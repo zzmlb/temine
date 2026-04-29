@@ -57,6 +57,8 @@ from AppKit import (  # type: ignore[import-not-found]
     NSColor,
     NSEvent,
     NSFont,
+    NSImage,
+    NSImageOnly,
     NSStatusWindowLevel,
     NSTrackingActiveAlways,
     NSTrackingArea,
@@ -155,22 +157,106 @@ def ensure_panel_running() -> bool:
     return is_panel_running()
 
 
-def trigger_arrange() -> None:
-    """调用控制面板的 /api/arrange 接口，自动排布所有终端窗口"""
+# 排布序列：每次按按钮 2 循环切换到下一个
+ARRANGE_SEQUENCE = [
+    {"name": "全屏", "region": "full", "cols": 0},
+    {"name": "上 1/2", "region": "top-half", "cols": 0},
+    {"name": "上 2/3", "region": "top-2-3", "cols": 0},
+    {"name": "下 1/2", "region": "bottom-half", "cols": 0},
+    {"name": "左 1/2", "region": "left-half", "cols": 0},
+    {"name": "右 1/2", "region": "right-half", "cols": 0},
+    {"name": "左 2/3", "region": "left-2-3", "cols": 0},
+]
+
+
+def trigger_arrange(region: str = "full", cols: int = 0) -> None:
+    """调用控制面板的 /api/arrange 接口，按指定 region 排布"""
     if not ensure_panel_running():
         return
     try:
-        body = json.dumps({"cols": 0, "region": "full"}).encode("utf-8")
+        body = json.dumps({"cols": cols, "region": region}).encode("utf-8")
         req = urllib.request.Request(
             f"{PANEL_URL}/api/arrange",
             data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=3) as r:
+        with urllib.request.urlopen(req, timeout=5) as r:
             r.read()
     except Exception as e:
         print(f"[island] arrange failed: {e}", file=sys.stderr)
+
+
+# === Chrome 窗口 toggle 支持 ===
+def _osa(script: str, timeout: float = 3.0) -> str:
+    try:
+        r = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def is_chrome_panel_open() -> bool:
+    """检查 Chrome 是否有 http://localhost:7890 的窗口"""
+    script = '''
+try
+    tell application "System Events"
+        if not (exists process "Google Chrome") then return "false"
+    end tell
+    tell application "Google Chrome"
+        repeat with w in windows
+            try
+                if (count of tabs of w) > 0 then
+                    if URL of active tab of w starts with "http://localhost:7890" then
+                        return "true"
+                    end if
+                end if
+            end try
+        end repeat
+    end tell
+    return "false"
+on error
+    return "false"
+end try
+'''
+    return _osa(script) == "true"
+
+
+def close_chrome_panel() -> None:
+    """关闭所有 URL 含 localhost:7890 的 Chrome 窗口"""
+    script = '''
+try
+    tell application "Google Chrome"
+        set windowsToClose to {}
+        repeat with w in windows
+            try
+                if (count of tabs of w) > 0 then
+                    if URL of active tab of w starts with "http://localhost:7890" then
+                        set end of windowsToClose to w
+                    end if
+                end if
+            end try
+        end repeat
+        repeat with w in windowsToClose
+            try
+                close w
+            end try
+        end repeat
+    end tell
+end try
+'''
+    _osa(script)
+
+
+def toggle_panel_window() -> None:
+    """开了就关，关了就开"""
+    if is_chrome_panel_open():
+        close_chrome_panel()
+    else:
+        open_panel_window()
 
 
 def open_panel_window() -> None:
@@ -221,8 +307,9 @@ class IslandView(NSView):
         self.drag_start_window_origin = None
         self.drag_start_mouse_global = None
         self.dot_view = None
-        self.label_view = None
-        # 在 view 创建时就启用 layer-backing
+        self.panel_btn = None
+        self.arrange_btn = None
+        self.arrange_idx = 0  # 排布序列当前索引
         self.setWantsLayer_(True)
         print(f"[island] IslandView initWithFrame_ OK, frame={frame}", file=sys.stderr)
         return self
@@ -265,12 +352,22 @@ class IslandView(NSView):
             self.addSubview_(self.dot_view)
             print("[island] dot_view added", file=sys.stderr)
 
-            # 按钮 1：窗口（开/关控制面板）
-            self.panel_btn = self._make_button("窗", BTN1_X, b"onClickPanel:")
+            # 按钮 1：开/关控制面板（SF Symbol "macwindow"）
+            self.panel_btn = self._make_button(
+                ["macwindow", "macwindow.on.rectangle"],
+                "▢",
+                BTN1_X,
+                b"onClickPanel:",
+            )
             self.addSubview_(self.panel_btn)
 
-            # 按钮 2：列（一键自动排布）
-            self.arrange_btn = self._make_button("列", BTN2_X, b"onClickArrange:")
+            # 按钮 2：循环切换排布（SF Symbol "rectangle.split.3x1"）
+            self.arrange_btn = self._make_button(
+                ["rectangle.3.group.fill", "square.grid.3x1.below.line.grid.1x2"],
+                "⊞",
+                BTN2_X,
+                b"onClickArrange:",
+            )
             self.addSubview_(self.arrange_btn)
             print("[island] buttons added", file=sys.stderr)
         except Exception as e:
@@ -278,32 +375,65 @@ class IslandView(NSView):
             print(f"[island] subviews EXCEPTION: {type(e).__name__}: {e}", file=sys.stderr)
             traceback.print_exc()
 
-    def _make_button(self, title: str, x: float, action: bytes):
+    def _make_button(self, sf_symbol_candidates, fallback_char: str, x: float, action: bytes):
+        """
+        创建灵动岛风格按钮：
+        - 透明背景，hover 时背景变浅（在 mouseDown 处理）
+        - SF Symbol 图标（系统色 = 白），优雅简洁
+        - 失败时回退到单字符
+        """
         btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(x, BTN_Y, BTN_SIZE, BTN_SIZE)
         )
-        btn.setTitle_(title)
         btn.setBordered_(False)
-        btn.setFont_(NSFont.boldSystemFontOfSize_(15.0))
         btn.setWantsLayer_(True)
         layer = btn.layer()
         if layer is not None:
+            # 默认透明，hover/click 时通过子层或动画反馈
             layer.setBackgroundColor_(
-                NSColor.colorWithWhite_alpha_(1.0, 0.12).CGColor()
+                NSColor.colorWithWhite_alpha_(1.0, 0.06).CGColor()
             )
             layer.setCornerRadius_(BTN_SIZE / 2.0)
-            layer.setBorderColor_(NSColor.systemPinkColor().CGColor())
-            layer.setBorderWidth_(1.5)
+            # 极薄高光描边
+            layer.setBorderColor_(
+                NSColor.colorWithWhite_alpha_(1.0, 0.16).CGColor()
+            )
+            layer.setBorderWidth_(0.5)
+        # 尝试 SF Symbol（macOS 11+）
+        img = None
+        for name in sf_symbol_candidates:
+            try:
+                candidate = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, None)
+                if candidate is not None:
+                    img = candidate
+                    break
+            except Exception:
+                continue
+        if img is not None:
+            btn.setImage_(img)
+            btn.setImagePosition_(NSImageOnly)
+            try:
+                btn.setContentTintColor_(NSColor.whiteColor())
+            except Exception:
+                pass
+        else:
+            btn.setTitle_(fallback_char)
+            btn.setFont_(NSFont.boldSystemFontOfSize_(16.0))
         btn.setTarget_(self)
         btn.setAction_(action)
         btn.setHidden_(True)
         return btn
 
     def onClickPanel_(self, _sender):
-        open_panel_window()
+        toggle_panel_window()
 
     def onClickArrange_(self, _sender):
-        trigger_arrange()
+        # 循环到下一个排布
+        idx = self.arrange_idx % len(ARRANGE_SEQUENCE)
+        item = ARRANGE_SEQUENCE[idx]
+        print(f"[island] arrange → {item['name']} ({item['region']})", file=sys.stderr)
+        trigger_arrange(region=item["region"], cols=item["cols"])
+        self.arrange_idx = (idx + 1) % len(ARRANGE_SEQUENCE)
 
     def viewDidMoveToWindow(self):
         try:
