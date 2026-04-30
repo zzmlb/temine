@@ -338,6 +338,100 @@ def open_panel_window() -> None:
         pass
 
 
+# === 像素 sprite 待机动画 ===========================
+# 经典恐龙 walk cycle（参考 Chrome offline T-Rex，BSD 许可，简化版）
+# X = 有像素，. = 透明
+# 16x14 矩阵，每像素渲染成 PIXEL_SCALE 个屏幕像素
+
+DINO_FRAME_1 = """
+.....XXXXXX
+.....XXXXX.X
+.....XXXXX.
+.....XXXXX
+.X..XXXXXX
+.XXXXXXX
+.XXXXXX
+.XXXXX
+.X.XX.X
+""".strip("\n").split("\n")
+
+DINO_FRAME_2 = """
+.....XXXXXX
+.....XXXXX.X
+.....XXXXX.
+.....XXXXX
+.X..XXXXXX
+.XXXXXXX
+.XXXXXX
+.XXXXX
+.X.X.XX
+""".strip("\n").split("\n")
+
+DINO_FRAME_3 = DINO_FRAME_1
+DINO_FRAME_4 = DINO_FRAME_2
+
+# 也内置一个简单的"心跳"备选 sprite 作为 demo
+HEART_FRAMES_RAW = [
+    """
+....
+.XX.XX.
+XXXXXXX
+XXXXXXX
+.XXXXX.
+..XXX..
+...X...
+""",
+    """
+....
+XXX.XXX
+XXXXXXXXX
+XXXXXXXXX
+.XXXXXXX.
+..XXXXX..
+...XXX...
+....X....
+""",
+]
+
+PIXEL_SCALE = 2  # 每个 sprite 像素 = 2x2 屏幕像素
+DINO_FRAMES_RAW = [DINO_FRAME_1, DINO_FRAME_2, DINO_FRAME_3, DINO_FRAME_4]
+
+
+def _render_pixel_frame(grid: list, color_rgba: tuple, scale: int = PIXEL_SCALE):
+    """字符矩阵 → CGImage（用 Quartz CGBitmapContext，省 CPU）"""
+    try:
+        from Quartz import (  # type: ignore[import-not-found]
+            CGBitmapContextCreate,
+            CGBitmapContextCreateImage,
+            CGColorSpaceCreateDeviceRGB,
+            CGContextSetRGBFillColor,
+            CGContextFillRect,
+            kCGImageAlphaPremultipliedLast,
+        )
+    except Exception:
+        return None
+    h = len(grid)
+    w = max(len(row) for row in grid) if grid else 0
+    if w == 0 or h == 0:
+        return None
+    width = w * scale
+    height = h * scale
+    cs = CGColorSpaceCreateDeviceRGB()
+    ctx = CGBitmapContextCreate(
+        None, width, height, 8, width * 4, cs, kCGImageAlphaPremultipliedLast
+    )
+    r, g, b, a = color_rgba
+    CGContextSetRGBFillColor(ctx, r, g, b, a)
+    for y, row in enumerate(grid):
+        for x, c in enumerate(row):
+            if c == "X":
+                # CGContext 坐标 y 向上：反转
+                CGContextFillRect(
+                    ctx, ((x * scale, (h - 1 - y) * scale), (scale, scale))
+                )
+    return CGBitmapContextCreateImage(ctx)
+
+
 # === Chrome 浮层窗口（独立 NSWindow，不用 NSPopover 避免 PyObjC 踩坑）===
 POPOVER_W = 360
 POPOVER_H = 460
@@ -694,26 +788,40 @@ class IslandView(NSView):
             traceback.print_exc()
 
         try:
-            # 紫粉圆点子视图（紧凑态居中）+ Core Animation 呼吸动画
+            # 紧凑态：像素 sprite 动画（恐龙 walk cycle）+ 备用紫粉光点
+            # 用 CALayer + CAKeyframeAnimation 切换 contents（GPU 渲染，零 CPU）
             cx = COMPACT_W / 2.0
             cy = COMPACT_H / 2.0
-            dot_size = 16.0
+            sprite_w = 36.0
+            sprite_h = 28.0
             self.dot_view = NSView.alloc().initWithFrame_(
-                NSMakeRect(cx - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size)
+                NSMakeRect(cx - sprite_w / 2.0, cy - sprite_h / 2.0, sprite_w, sprite_h)
             )
             self.dot_view.setWantsLayer_(True)
-            dot_layer = self.dot_view.layer()
-            if dot_layer is not None:
-                dot_layer.setBackgroundColor_(NSColor.systemPinkColor().CGColor())
-                dot_layer.setCornerRadius_(dot_size / 2.0)
-                # 给光点加发光阴影 + 呼吸动画（GPU 渲染，零 CPU 开销）
-                dot_layer.setShadowColor_(NSColor.systemPinkColor().CGColor())
-                dot_layer.setShadowOpacity_(0.85)
-                dot_layer.setShadowRadius_(8.0)
-                dot_layer.setShadowOffset_((0.0, 0.0))
-                self._add_breathe_animation(dot_layer)
+            sprite_layer = self.dot_view.layer()
+            if sprite_layer is not None:
+                # 关键：保持像素清晰，不被反锯齿模糊
+                sprite_layer.setMagnificationFilter_("nearest")
+                sprite_layer.setMinificationFilter_("nearest")
+                # 渲染恐龙 4 帧
+                sprite_color = (0.97, 0.45, 0.78, 1.0)  # 紫粉色保持品牌感
+                frames = []
+                for grid in DINO_FRAMES_RAW:
+                    cg = _render_pixel_frame(grid, sprite_color, scale=2)
+                    if cg is not None:
+                        frames.append(cg)
+                if frames:
+                    # 设置初始帧
+                    sprite_layer.setContents_(frames[0])
+                    self._add_sprite_animation(sprite_layer, frames)
+                    print(f"[island] sprite animation: {len(frames)} frames", file=sys.stderr)
+                else:
+                    # 渲染失败 → fallback 紫粉光点
+                    sprite_layer.setBackgroundColor_(NSColor.systemPinkColor().CGColor())
+                    sprite_layer.setCornerRadius_(min(sprite_w, sprite_h) / 2.0)
+                    self._add_breathe_animation(sprite_layer)
+                    print("[island] sprite render failed, fallback to dot", file=sys.stderr)
             self.addSubview_(self.dot_view)
-            print("[island] dot_view added with breathe anim", file=sys.stderr)
 
             # 按钮 1：开/关控制面板（SF Symbol "macwindow"）
             self.panel_btn = self._make_button(
@@ -795,6 +903,28 @@ class IslandView(NSView):
         btn.setAction_(action)
         btn.setHidden_(True)
         return btn
+
+    @objc.python_method
+    def _add_sprite_animation(self, layer, frames: list, fps: float = 8.0):
+        """像素 sprite 帧动画：CAKeyframeAnimation 切换 layer.contents
+        - 离散切换（不插值），保持像素动画的"跳帧"感
+        - GPU 渲染，零 CPU
+        """
+        try:
+            from Quartz import CAKeyframeAnimation  # type: ignore[import-not-found]
+            n = len(frames)
+            if n == 0:
+                return
+            duration = n / fps  # 全周期时长（秒）
+            ani = CAKeyframeAnimation.animationWithKeyPath_("contents")
+            ani.setValues_(frames)
+            ani.setDuration_(duration)
+            ani.setRepeatCount_(1e10)
+            # 离散模式：直接切下一帧不做颜色插值
+            ani.setCalculationMode_("discrete")
+            layer.addAnimation_forKey_(ani, "sprite-walk")
+        except Exception as e:
+            print(f"[island] sprite anim failed: {e}", file=sys.stderr)
 
     @objc.python_method
     def _add_breathe_animation(self, layer):
