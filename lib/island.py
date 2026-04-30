@@ -338,11 +338,10 @@ def open_panel_window() -> None:
         pass
 
 
-# === 像素 sprite 待机动画 ===========================
-# 经典 Space Invader 章鱼小怪物（11×8，对称像素，公共领域参考）
-# 4 帧循环：静止 → 摆触手 → 静止 → 摆触手（反向）
+# === 像素 sprite 库（公共领域 Space Invader 风格）===
+# 每个角色 11×8 字符矩阵，2 帧动画
 
-INVADER_F1 = [
+OCTOPUS_F1 = [
     "..X.....X..",
     "...X...X...",
     "..XXXXXXX..",
@@ -352,7 +351,7 @@ INVADER_F1 = [
     "X.X.....X.X",
     "...XX.XX...",
 ]
-INVADER_F2 = [
+OCTOPUS_F2 = [
     "..X.....X..",
     "X..X...X..X",
     "X.XXXXXXX.X",
@@ -362,8 +361,36 @@ INVADER_F2 = [
     "..X.....X..",
     ".X.......X.",
 ]
-SPRITE_FRAMES = [INVADER_F1, INVADER_F2, INVADER_F1, INVADER_F2]
-PIXEL_SCALE = 3  # 每像素 3x3 屏幕像素 → sprite 视觉 33×24
+
+CRAB_F1 = [
+    "..X.....X..",
+    "X..X...X..X",
+    "X.XXXXXXX.X",
+    "XXX.XXX.XXX",
+    "XXXXXXXXXXX",
+    ".XXXXXXXXX.",
+    ".X.X...X.X.",
+    "X.X.....X.X",
+]
+CRAB_F2 = [
+    "..X.....X..",
+    "...X...X...",
+    "..XXXXXXX..",
+    ".XX.XXX.XX.",
+    "XXXXXXXXXXX",
+    "XXXXXXXXXXX",
+    "X.X.....X.X",
+    ".X.X...X.X.",
+]
+
+# 灵动岛紧凑/展开 + 舞台尺寸
+# StageWindow 是独立透明窗口，覆盖灵动岛周围让角色游走
+STAGE_W = 360
+STAGE_H = 80
+PIXEL_SCALE = 2
+SPRITE_W = 11 * PIXEL_SCALE  # 22
+SPRITE_H = 8 * PIXEL_SCALE   # 16
+STORY_DURATION = 8.0          # 一个剧情循环 8 秒
 
 
 def _render_pixel_frame(grid: list, color_rgba: tuple, scale: int = PIXEL_SCALE):
@@ -400,6 +427,176 @@ def _render_pixel_frame(grid: list, color_rgba: tuple, scale: int = PIXEL_SCALE)
             pass
         return None
     return image
+
+
+# === 舞台窗口（透明 + 鼠标穿透 + 跟随灵动岛）=========
+# 让角色 sprite 能在灵动岛胶囊周围 +/-125px 范围内游走
+
+class StageWindow(NSObject):
+    """舞台：透明 NSWindow，鼠标完全穿透，承载多角色 sprite 动画"""
+
+    def init(self):
+        self = objc.super(StageWindow, self).init()
+        if self is None:
+            return None
+        self.window = None
+        self.view = None
+        self.octopus_layer = None
+        self.crab_layer = None
+        return self
+
+    @objc.python_method
+    def _build(self):
+        rect = ((0.0, 0.0), (float(STAGE_W), float(STAGE_H)))
+        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect, NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False
+        )
+        win.setBackgroundColor_(NSColor.clearColor())
+        win.setOpaque_(False)
+        win.setHasShadow_(False)
+        win.setIgnoresMouseEvents_(True)  # 鼠标完全穿透
+        win.setLevel_(NSStatusWindowLevel)  # 与灵动岛同级
+        win.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorStationary
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+        )
+        view = NSView.alloc().initWithFrame_(((0, 0), (STAGE_W, STAGE_H)))
+        view.setWantsLayer_(True)
+        win.setContentView_(view)
+        self.window = win
+        self.view = view
+        self._add_characters()
+
+    @objc.python_method
+    def _make_character_layer(self, frames_raw, color_rgba):
+        """创建一个角色 CALayer + 帧动画"""
+        try:
+            from Quartz import CAKeyframeAnimation  # type: ignore[import-not-found]
+            from QuartzCore import CALayer  # type: ignore[import-not-found]
+        except Exception:
+            try:
+                from Quartz import CALayer, CAKeyframeAnimation  # type: ignore[import-not-found]
+            except Exception as e:
+                print(f"[stage] CALayer import failed: {e}", file=sys.stderr)
+                return None
+        # 渲染所有帧
+        frames = []
+        for grid in frames_raw:
+            img = _render_pixel_frame(grid, color_rgba, scale=PIXEL_SCALE)
+            if img is not None:
+                frames.append(img)
+        if not frames:
+            return None
+        layer = CALayer.layer()
+        layer.setBounds_(((0, 0), (SPRITE_W, SPRITE_H)))
+        layer.setMagnificationFilter_("nearest")
+        layer.setMinificationFilter_("nearest")
+        layer.setContents_(frames[0])
+        # 帧动画（永远循环，2 帧 0.6s）
+        contents_ani = CAKeyframeAnimation.animationWithKeyPath_("contents")
+        contents_ani.setValues_(frames)
+        contents_ani.setDuration_(0.6)
+        contents_ani.setRepeatCount_(1e10)
+        contents_ani.setCalculationMode_("discrete")
+        layer.addAnimation_forKey_(contents_ani, "frames")
+        return layer
+
+    @objc.python_method
+    def _add_characters(self):
+        """加章鱼+螃蟹两个角色 + 剧情位置动画"""
+        # 角色颜色
+        OCTO_COLOR = (0.97, 0.45, 0.78, 1.0)   # 紫粉
+        CRAB_COLOR = (1.0, 0.55, 0.30, 1.0)    # 橙红
+        # 关键 X 坐标（舞台中心 = STAGE_W/2 = 180）
+        center_x = STAGE_W / 2.0
+        center_y = STAGE_H / 2.0
+        right_x = center_x + 90        # 右舞台
+        left_x = center_x - 90         # 左舞台
+        right_offstage = STAGE_W + SPRITE_W  # 舞台右外
+        left_offstage = -SPRITE_W            # 舞台左外
+
+        # === 章鱼 ===
+        self.octopus_layer = self._make_character_layer(
+            [OCTOPUS_F1, OCTOPUS_F2], OCTO_COLOR
+        )
+        if self.octopus_layer is not None:
+            self.octopus_layer.setPosition_((center_x, center_y))
+            self.view.layer().addSublayer_(self.octopus_layer)
+            self._animate_position(
+                self.octopus_layer,
+                values=[
+                    (center_x, center_y),       # 0   站中央
+                    (center_x, center_y),       # 3s  站中央
+                    (right_x, center_y),        # 4s  走右
+                    (right_x, center_y),        # 7s  在右
+                    (left_offstage, center_y),  # 7s  瞬移左外
+                    (center_x, center_y),       # 8s  走回中央
+                ],
+                key_times=[0.0, 0.375, 0.5, 0.875, 0.875001, 1.0],
+            )
+
+        # === 螃蟹 ===
+        self.crab_layer = self._make_character_layer(
+            [CRAB_F1, CRAB_F2], CRAB_COLOR
+        )
+        if self.crab_layer is not None:
+            self.crab_layer.setPosition_((left_offstage, center_y))
+            self.view.layer().addSublayer_(self.crab_layer)
+            self._animate_position(
+                self.crab_layer,
+                values=[
+                    (left_offstage, center_y),   # 0   左外
+                    (left_offstage, center_y),   # 4s  仍左外
+                    (center_x, center_y),        # 5s  走入中央
+                    (center_x, center_y),        # 7s  在中央
+                    (right_offstage, center_y),  # 8s  走出右
+                ],
+                key_times=[0.0, 0.5, 0.625, 0.875, 1.0],
+            )
+        print("[stage] characters added (octopus + crab)", file=sys.stderr)
+
+    @objc.python_method
+    def _animate_position(self, layer, values, key_times):
+        """给 layer 加 position keyframe 动画（8s 循环）"""
+        try:
+            from Quartz import CAKeyframeAnimation  # type: ignore[import-not-found]
+            from Foundation import NSValue  # type: ignore[import-not-found]
+        except Exception as e:
+            print(f"[stage] position anim import failed: {e}", file=sys.stderr)
+            return
+        ns_values = []
+        for x, y in values:
+            ns_values.append(NSValue.valueWithPoint_((float(x), float(y))))
+        ani = CAKeyframeAnimation.animationWithKeyPath_("position")
+        ani.setValues_(ns_values)
+        ani.setKeyTimes_([float(t) for t in key_times])
+        ani.setDuration_(STORY_DURATION)
+        ani.setRepeatCount_(1e10)
+        ani.setCalculationMode_("linear")  # 平滑插值移动
+        layer.addAnimation_forKey_(ani, "story")
+
+    @objc.python_method
+    def show(self):
+        if self.window is None:
+            self._build()
+        self.window.orderFront_(None)
+
+    @objc.python_method
+    def hide(self):
+        if self.window:
+            self.window.orderOut_(None)
+
+    @objc.python_method
+    def follow(self, island_origin_x, island_origin_y, island_w, island_h):
+        """灵动岛位置变化时同步舞台位置（中心对齐）"""
+        if self.window is None:
+            self._build()
+        # 灵动岛中心 = (island_x + island_w/2, island_y + island_h/2)
+        # 舞台中心对齐：stage_x + STAGE_W/2 = island_x + island_w/2
+        sx = island_origin_x + (island_w - STAGE_W) / 2.0
+        sy = island_origin_y + (island_h - STAGE_H) / 2.0
+        self.window.setFrameOrigin_((float(sx), float(sy)))
 
 
 # === Chrome 浮层窗口（独立 NSWindow，不用 NSPopover 避免 PyObjC 踩坑）===
@@ -731,6 +928,7 @@ class IslandView(NSView):
         self.arrange_btn = None
         self.arrange_idx = 0  # 排布序列当前索引
         self.chrome_popover = None  # Chrome 浮层（懒加载）
+        self.stage = None           # 角色舞台窗口（懒加载）
         self.setWantsLayer_(True)
         print(f"[island] IslandView initWithFrame_ OK, frame={frame}", file=sys.stderr)
         return self
@@ -758,38 +956,23 @@ class IslandView(NSView):
             traceback.print_exc()
 
         try:
-            # 紧凑态椭圆胶囊（110×48）中心放像素小怪物动画
-            # 11×8 sprite × scale=3 → 33×24 屏幕像素，居中显示
+            # 紧凑态胶囊里只放紫粉光点 + 呼吸动画（角色都在舞台上）
             cx = COMPACT_W / 2.0
             cy = COMPACT_H / 2.0
-            sprite_w = 11 * PIXEL_SCALE  # 33
-            sprite_h = 8 * PIXEL_SCALE   # 24
+            dot_size = 16.0
             self.dot_view = NSView.alloc().initWithFrame_(
-                NSMakeRect(cx - sprite_w / 2.0, cy - sprite_h / 2.0, sprite_w, sprite_h)
+                NSMakeRect(cx - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size)
             )
             self.dot_view.setWantsLayer_(True)
-            sprite_layer = self.dot_view.layer()
-            if sprite_layer is not None:
-                # 关键：保持像素清晰，不被反锯齿模糊
-                sprite_layer.setMagnificationFilter_("nearest")
-                sprite_layer.setMinificationFilter_("nearest")
-                # 渲染 sprite 帧（紫粉色保持品牌一致）
-                sprite_color = (0.97, 0.45, 0.78, 1.0)
-                frames = []
-                for grid in SPRITE_FRAMES:
-                    img = _render_pixel_frame(grid, sprite_color, scale=PIXEL_SCALE)
-                    if img is not None:
-                        frames.append(img)
-                if frames:
-                    sprite_layer.setContents_(frames[0])
-                    self._add_sprite_animation(sprite_layer, frames, fps=3.0)
-                    print(f"[island] ✓ sprite OK: {len(frames)} frames {sprite_w}x{sprite_h}", file=sys.stderr)
-                else:
-                    # 渲染失败 → fallback 紫粉光点
-                    sprite_layer.setBackgroundColor_(NSColor.systemPinkColor().CGColor())
-                    sprite_layer.setCornerRadius_(min(sprite_w, sprite_h) / 2.0)
-                    self._add_breathe_animation(sprite_layer)
-                    print("[island] ✗ sprite FAILED, fallback to dot", file=sys.stderr)
+            dot_layer = self.dot_view.layer()
+            if dot_layer is not None:
+                dot_layer.setBackgroundColor_(NSColor.systemPinkColor().CGColor())
+                dot_layer.setCornerRadius_(dot_size / 2.0)
+                dot_layer.setShadowColor_(NSColor.systemPinkColor().CGColor())
+                dot_layer.setShadowOpacity_(0.85)
+                dot_layer.setShadowRadius_(8.0)
+                dot_layer.setShadowOffset_((0.0, 0.0))
+                self._add_breathe_animation(dot_layer)
             self.addSubview_(self.dot_view)
 
             # 按钮 1：开/关控制面板（SF Symbol "macwindow"）
@@ -979,10 +1162,26 @@ class IslandView(NSView):
                 print("[island] tracking area added", file=sys.stderr)
             if self.dot_view is None:
                 self._setup_layers()
+            # 创建并显示舞台
+            if self.stage is None:
+                self.stage = StageWindow.alloc().init()
+            self._sync_stage()
+            self.stage.show()
         except Exception as e:
             import traceback
             print(f"[island] viewDidMoveToWindow EXCEPTION: {type(e).__name__}: {e}", file=sys.stderr)
             traceback.print_exc()
+
+    @objc.python_method
+    def _sync_stage(self):
+        """根据当前主窗口位置/大小，同步舞台位置"""
+        if self.stage is None:
+            return
+        win = self.window()
+        if win is None:
+            return
+        f = win.frame()
+        self.stage.follow(f.origin.x, f.origin.y, f.size.width, f.size.height)
 
     def acceptsFirstMouse_(self, _event):
         return True
@@ -1029,6 +1228,8 @@ class IslandView(NSView):
         win.setFrame_display_animate_(
             NSMakeRect(new_x, new_y, new_w, new_h), True, True
         )
+        # 展开/收缩后舞台位置也要同步
+        self._sync_stage()
         # 更新 layer cornerRadius 与子视图位置
         layer = self.layer()
         if layer is not None:
@@ -1087,6 +1288,8 @@ class IslandView(NSView):
             self.drag_start_window_origin.y + dy,
         )
         win.setFrameOrigin_(new_origin)
+        # 拖动时同步舞台位置
+        self._sync_stage()
 
     def mouseUp_(self, _event):
         if self.drag_moved:
