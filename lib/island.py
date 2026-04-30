@@ -383,14 +383,134 @@ CRAB_F2 = [
     ".X.X...X.X.",
 ]
 
-# 灵动岛紧凑/展开 + 舞台尺寸
-# StageWindow 是独立透明窗口，覆盖灵动岛周围让角色游走
-STAGE_W = 360
+# === 探险剧情 sprite（小人 + 恐龙 + 特效字）===
+
+# 小人 8x11（站立 / 走路1 / 走路2 / 跑步）
+HUMAN_STAND = [
+    "...XX...",
+    "...XX...",
+    "..XXXX..",
+    ".XXXXXX.",
+    "...XX...",
+    "...XX...",
+    "..XXXX..",
+    ".XX..XX.",
+    ".XX..XX.",
+    ".X....X.",
+    "XX....XX",
+]
+HUMAN_WALK1 = [
+    "...XX...",
+    "...XX...",
+    "..XXXX..",
+    ".XXXXXX.",
+    "...XX...",
+    "...XX...",
+    "..XXXX..",
+    ".XX..XX.",
+    ".X....X.",
+    "XX....X.",
+    "X.....XX",
+]
+HUMAN_WALK2 = [
+    "...XX...",
+    "...XX...",
+    "..XXXX..",
+    ".XXXXXX.",
+    "...XX...",
+    "...XX...",
+    "..XXXX..",
+    ".XX..XX.",
+    ".X....X.",
+    ".X....XX",
+    "XX.....X",
+]
+# 跑步 = 同 walk 但更快切换；这里复用 WALK1/WALK2
+
+# 恐龙 11x9（睡觉 / 站立 / 追击）
+DINO_SLEEP = [
+    "...........",
+    "...........",
+    "..........",
+    "....XXXX...",
+    "...XXXXXX..",
+    "..XXXXXXXX.",
+    ".XXXXXXXXXX",
+    "XX.XX.XX.XX",
+    "..X..X..X..",
+]
+DINO_AWAKE = [
+    "....XXXX...",
+    "....XXXXX..",
+    "....XXX....",
+    "....XXXX...",
+    "....XXXX...",
+    "...XXXXX...",
+    "..XXXXXXX..",
+    ".XX.XXX.XX.",
+    "..X..X..X..",
+]
+DINO_CHASE = [
+    "....XXXX...",
+    "....XXXXX..",
+    "....XXX....",
+    "....XXXX...",
+    "...XXXXX...",
+    "..XXXXXXX..",
+    ".XXXXXXXXX.",
+    "X.X.X.X.X..",
+    "..X..X.....",
+]
+
+# zZz 文字（5x3）
+ZZZ_F1 = [
+    "Z....",
+    ".Z...",
+    "..ZZZ",
+]
+ZZZ_F2 = [
+    ".Z...",
+    "..Z..",
+    "...ZZ",
+]
+
+# ! 感叹号（3x5）
+EXCLAIM = [
+    ".X.",
+    ".X.",
+    ".X.",
+    "...",
+    ".X.",
+]
+
+# 角色 sprite 尺寸（每像素 scale=2 → 屏幕像素）
+HUMAN_W = 8 * PIXEL_SCALE   # 16
+HUMAN_H = 11 * PIXEL_SCALE  # 22
+DINO_W = 11 * PIXEL_SCALE   # 22
+DINO_H = 9 * PIXEL_SCALE    # 18
+ZZZ_W = 5 * PIXEL_SCALE     # 10
+ZZZ_H = 3 * PIXEL_SCALE     # 6
+EXCLAIM_W = 3 * PIXEL_SCALE # 6
+EXCLAIM_H = 5 * PIXEL_SCALE # 10
+
+# 舞台尺寸：紧贴胶囊一圈（外圈薄环带 = 陆地，内部 = 山洞）
+# 胶囊 110×48 居中在舞台 → 胶囊位于 (20, 16)~(130, 64)
+# 外圈环带宽 16px（上下左右各 16），舞台 150×80
+STAGE_W = 150
 STAGE_H = 80
 PIXEL_SCALE = 2
+# 胶囊在舞台坐标系内的边界
+CAVE_LEFT = 20.0
+CAVE_RIGHT = 130.0
+CAVE_TOP = 16.0      # 山洞顶（上沿）
+CAVE_BOTTOM = 64.0   # 山洞底（下沿）
+CAVE_CY = (CAVE_TOP + CAVE_BOTTOM) / 2.0   # 40  胶囊垂直中心
+# 山洞内分层：上半（通道）和下半（深处恐龙窝）
+CAVE_UPPER_Y = CAVE_TOP + 12.0      # 28  小人走廊高度
+CAVE_LOWER_Y = CAVE_BOTTOM - 12.0   # 52  恐龙窝高度
 SPRITE_W = 11 * PIXEL_SCALE  # 22
 SPRITE_H = 8 * PIXEL_SCALE   # 16
-STORY_DURATION = 8.0          # 一个剧情循环 8 秒
+STORY_DURATION = 16.0  # 一个完整探险剧情循环 16 秒
 
 
 def _render_pixel_frame(grid: list, color_rgba: tuple, scale: int = PIXEL_SCALE):
@@ -441,8 +561,10 @@ class StageWindow(NSObject):
             return None
         self.window = None
         self.view = None
-        self.octopus_layer = None
-        self.crab_layer = None
+        self.human_layer = None
+        self.dino_layer = None
+        self.zzz_layer = None
+        self.exclaim_layer = None
         return self
 
     @objc.python_method
@@ -502,57 +624,156 @@ class StageWindow(NSObject):
 
     @objc.python_method
     def _add_characters(self):
-        """加章鱼+螃蟹两个角色 + 剧情位置动画"""
-        # 角色颜色
-        OCTO_COLOR = (0.97, 0.45, 0.78, 1.0)   # 紫粉
-        CRAB_COLOR = (1.0, 0.55, 0.30, 1.0)    # 橙红
-        # 关键 X 坐标（舞台中心 = STAGE_W/2 = 180）
-        center_x = STAGE_W / 2.0
-        center_y = STAGE_H / 2.0
-        right_x = center_x + 90        # 右舞台
-        left_x = center_x - 90         # 左舞台
-        right_offstage = STAGE_W + SPRITE_W  # 舞台右外
-        left_offstage = -SPRITE_W            # 舞台左外
+        """山洞探险剧情（紧贴灵动岛 16s 循环）
 
-        # === 章鱼 ===
-        self.octopus_layer = self._make_character_layer(
-            [OCTOPUS_F1, OCTOPUS_F2], OCTO_COLOR
+        舞台 150×80：
+          胶囊（山洞）= (20, 16)~(130, 64)
+          上沿陆地 (16) / 下沿陆地 (64) / 左右陆地外圈
+          山洞内分层：上半（小人走廊 y=28）/ 下半（恐龙窝 y=52）
+
+        小人不能离开舞台 150×80 范围
+        """
+        HUMAN_COLOR = (0.95, 0.95, 0.95, 1.0)
+        DINO_COLOR = (0.45, 1.0, 0.55, 1.0)
+        ZZZ_COLOR = (0.65, 0.75, 1.0, 0.85)
+        EXCLAIM_COLOR = (1.0, 0.85, 0.0, 1.0)
+
+        # 关键位置（舞台坐标系）
+        START_X = STAGE_W - 8        # 142  右下角陆地起点
+        ENTRANCE_X = CAVE_RIGHT - 6  # 124  山洞右口
+        UPPER_LANE_Y = CAVE_UPPER_Y  # 28   山洞内小人走廊
+        LOWER_LANE_Y = CAVE_LOWER_Y  # 52   恐龙窝
+        DEEP_X = CAVE_LEFT + 16      # 36   山洞左侧深处
+        TOP_LANE_Y = 8.0             # 顶部陆地（外圈）
+        BOTTOM_LANE_Y = STAGE_H - 8  # 72   底部陆地
+
+        # === 小人（探险者）===
+        self.human_layer = self._make_character_layer_v2(
+            [HUMAN_STAND, HUMAN_WALK1, HUMAN_STAND, HUMAN_WALK2],
+            HUMAN_COLOR, HUMAN_W, HUMAN_H, frame_duration=0.4,
         )
-        if self.octopus_layer is not None:
-            self.octopus_layer.setPosition_((center_x, center_y))
-            self.view.layer().addSublayer_(self.octopus_layer)
+        if self.human_layer is not None:
+            self.human_layer.setPosition_((START_X, BOTTOM_LANE_Y))
+            self.view.layer().addSublayer_(self.human_layer)
             self._animate_position(
-                self.octopus_layer,
+                self.human_layer,
                 values=[
-                    (center_x, center_y),       # 0   站中央
-                    (center_x, center_y),       # 3s  站中央
-                    (right_x, center_y),        # 4s  走右
-                    (right_x, center_y),        # 7s  在右
-                    (left_offstage, center_y),  # 7s  瞬移左外
-                    (center_x, center_y),       # 8s  走回中央
+                    (START_X, BOTTOM_LANE_Y),     # 0s   外圈起点（右下陆地）
+                    (ENTRANCE_X, BOTTOM_LANE_Y),  # 1s   走到山洞右口下方
+                    (ENTRANCE_X, UPPER_LANE_Y),   # 2s   钻进山洞（位置上移）
+                    (DEEP_X + 30, UPPER_LANE_Y),  # 4s   山洞内向左探险
+                    (DEEP_X, UPPER_LANE_Y),       # 5s   到深处
+                    (DEEP_X, UPPER_LANE_Y),       # 6s   站住看下方恐龙
+                    (DEEP_X + 30, UPPER_LANE_Y),  # 7s   转身往出口跑
+                    (ENTRANCE_X, UPPER_LANE_Y),   # 8s   到山洞右口
+                    (ENTRANCE_X, BOTTOM_LANE_Y),  # 8.5s 跳出山洞到下沿
+                    (CAVE_LEFT - 4, BOTTOM_LANE_Y),  # 10s  沿底部陆地向左跑
+                    (CAVE_LEFT - 4, TOP_LANE_Y),     # 11.5s 沿左外圈向上跑
+                    (ENTRANCE_X, TOP_LANE_Y),        # 13s  沿顶部陆地向右跑
+                    (START_X, TOP_LANE_Y),           # 14s  跑到右上角
+                    (START_X, BOTTOM_LANE_Y),        # 15s  下到起点（一圈完成）
+                    (START_X, BOTTOM_LANE_Y),        # 16s  循环
                 ],
-                key_times=[0.0, 0.375, 0.5, 0.875, 0.875001, 1.0],
+                key_times=[0.0, 0.0625, 0.125, 0.25, 0.3125, 0.375, 0.4375, 0.5, 0.53125, 0.625, 0.71875, 0.8125, 0.875, 0.9375, 1.0],
             )
 
-        # === 螃蟹 ===
-        self.crab_layer = self._make_character_layer(
-            [CRAB_F1, CRAB_F2], CRAB_COLOR
+        # === 恐龙（守洞者）===
+        self.dino_layer = self._make_character_layer_v2(
+            [DINO_SLEEP, DINO_SLEEP, DINO_AWAKE, DINO_CHASE],
+            DINO_COLOR, DINO_W, DINO_H, frame_duration=4.0,
         )
-        if self.crab_layer is not None:
-            self.crab_layer.setPosition_((left_offstage, center_y))
-            self.view.layer().addSublayer_(self.crab_layer)
+        if self.dino_layer is not None:
+            self.dino_layer.setPosition_((DEEP_X, LOWER_LANE_Y))
+            self.view.layer().addSublayer_(self.dino_layer)
             self._animate_position(
-                self.crab_layer,
+                self.dino_layer,
                 values=[
-                    (left_offstage, center_y),   # 0   左外
-                    (left_offstage, center_y),   # 4s  仍左外
-                    (center_x, center_y),        # 5s  走入中央
-                    (center_x, center_y),        # 7s  在中央
-                    (right_offstage, center_y),  # 8s  走出右
+                    (DEEP_X, LOWER_LANE_Y),         # 0s   山洞深处下方睡
+                    (DEEP_X, LOWER_LANE_Y),         # 6s   仍在睡
+                    (DEEP_X, LOWER_LANE_Y),         # 7s   醒（位置不动）
+                    (DEEP_X + 30, LOWER_LANE_Y),    # 8s   起身向出口移动
+                    (ENTRANCE_X - 8, LOWER_LANE_Y), # 9s   到出口（出不去）
+                    (ENTRANCE_X - 8, LOWER_LANE_Y), # 14s  停在出口看小人跑
+                    (DEEP_X, LOWER_LANE_Y),         # 15s  返回深处
+                    (DEEP_X, LOWER_LANE_Y),         # 16s  重新睡
                 ],
-                key_times=[0.0, 0.5, 0.625, 0.875, 1.0],
+                key_times=[0.0, 0.375, 0.4375, 0.5, 0.5625, 0.875, 0.9375, 1.0],
             )
-        print("[stage] characters added (octopus + crab)", file=sys.stderr)
+
+        # === zZz 文字（恐龙睡觉时在它头上飘）===
+        self.zzz_layer = self._make_character_layer_v2(
+            [ZZZ_F1, ZZZ_F2], ZZZ_COLOR, ZZZ_W, ZZZ_H, frame_duration=0.4,
+        )
+        if self.zzz_layer is not None:
+            self.zzz_layer.setPosition_((DEEP_X + 8, LOWER_LANE_Y - 12))
+            self.view.layer().addSublayer_(self.zzz_layer)
+            # 仅 0~6s 显示（恐龙睡觉时）
+            self._animate_opacity(
+                self.zzz_layer,
+                values=[1.0, 1.0, 0.0, 0.0, 1.0],
+                key_times=[0.0, 0.375, 0.4375, 0.9375, 1.0],
+            )
+
+        # === ! 感叹号（小人 6~7s 看到恐龙时弹出）===
+        self.exclaim_layer = self._make_character_layer_v2(
+            [EXCLAIM, EXCLAIM], EXCLAIM_COLOR, EXCLAIM_W, EXCLAIM_H, frame_duration=0.3,
+        )
+        if self.exclaim_layer is not None:
+            self.exclaim_layer.setPosition_((DEEP_X, UPPER_LANE_Y - 14))
+            self.view.layer().addSublayer_(self.exclaim_layer)
+            self._animate_opacity(
+                self.exclaim_layer,
+                values=[0.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+                key_times=[0.0, 0.375, 0.376, 0.4375, 0.438, 1.0],
+            )
+
+        print("[stage] cave adventure loaded (human + dino + zZz + ! ; 16s loop)", file=sys.stderr)
+
+    @objc.python_method
+    def _make_character_layer_v2(self, frames_raw, color_rgba, w, h, frame_duration=0.5):
+        """V2 通用版：自定义尺寸 + 帧切换时长"""
+        try:
+            from Quartz import CALayer, CAKeyframeAnimation  # type: ignore[import-not-found]
+        except Exception as e:
+            print(f"[stage] CALayer import FAILED: {e}", file=sys.stderr)
+            return None
+        frames = []
+        for grid in frames_raw:
+            img = _render_pixel_frame(grid, color_rgba, scale=PIXEL_SCALE)
+            if img is not None:
+                frames.append(img)
+        if not frames:
+            print(f"[stage] frame render FAILED for color={color_rgba}", file=sys.stderr)
+            return None
+        layer = CALayer.layer()
+        layer.setBounds_(((0, 0), (w, h)))
+        layer.setMagnificationFilter_("nearest")
+        layer.setMinificationFilter_("nearest")
+        layer.setContents_(frames[0])
+        # 帧动画
+        contents_ani = CAKeyframeAnimation.animationWithKeyPath_("contents")
+        contents_ani.setValues_(frames)
+        contents_ani.setDuration_(frame_duration * len(frames))
+        contents_ani.setRepeatCount_(1e10)
+        contents_ani.setCalculationMode_("discrete")
+        layer.addAnimation_forKey_(contents_ani, "frames")
+        return layer
+
+    @objc.python_method
+    def _animate_opacity(self, layer, values, key_times):
+        """给 layer 加 opacity keyframe 动画（剧情周期循环）"""
+        try:
+            from Quartz import CAKeyframeAnimation  # type: ignore[import-not-found]
+        except Exception as e:
+            print(f"[stage] opacity anim import failed: {e}", file=sys.stderr)
+            return
+        ani = CAKeyframeAnimation.animationWithKeyPath_("opacity")
+        ani.setValues_([float(v) for v in values])
+        ani.setKeyTimes_([float(t) for t in key_times])
+        ani.setDuration_(STORY_DURATION)
+        ani.setRepeatCount_(1e10)
+        ani.setCalculationMode_("linear")
+        layer.addAnimation_forKey_(ani, "opacity")
 
     @objc.python_method
     def _animate_position(self, layer, values, key_times):
