@@ -86,18 +86,19 @@ STATE_FILE = STATE_DIR / "state.json"
 
 # 紧凑/展开**高度必须相同**，否则鼠标会在垂直方向出展开窗口边界，引发抖动
 COMPACT_W, COMPACT_H = 110, 48
-EXPANDED_W, EXPANDED_H = 260, 48  # 加了 Chrome 按钮，需要更宽
-DRAG_THRESHOLD_PX = 4
-COLLAPSE_DELAY_SEC = 0.15  # 鼠标退出后延迟收缩，防抖
-
-# 展开态 3 个按钮的位置（相对窗口左下角）
+# 灵动岛展开尺寸：3 按钮均匀对称布局
+# 公式：EXPANDED_W = 2*PAD + 3*BTN_SIZE + 2*GAP，让边距=间距，最美观对称
 BTN_SIZE = 36
+BTN_GAP = 20
+BTN_PAD = 20
+EXPANDED_W = 2 * BTN_PAD + 3 * BTN_SIZE + 2 * BTN_GAP  # 20+36+20+36+20+36+20 = 188
+EXPANDED_H = 48
 BTN_Y = (EXPANDED_H - BTN_SIZE) / 2.0  # 6
-BTN_GAP = 16
-BTN1_X = 20.0                                  # 按钮1：开/关控制面板
-BTN2_X = BTN1_X + BTN_SIZE + BTN_GAP           # 按钮2：Chrome 堆叠 (72)
-BTN3_X = BTN2_X + BTN_SIZE + BTN_GAP           # 按钮3：触发自动排布 (124)
-BTN4_X = BTN3_X + BTN_SIZE + BTN_GAP           # 按钮4：隐藏（如果以后加）
+BTN1_X = float(BTN_PAD)                            # 20  按钮1：开/关控制面板
+BTN2_X = BTN1_X + BTN_SIZE + BTN_GAP               # 76  按钮2：Chrome 堆叠
+BTN3_X = BTN2_X + BTN_SIZE + BTN_GAP               # 132 按钮3：触发自动排布
+DRAG_THRESHOLD_PX = 4
+COLLAPSE_DELAY_SEC = 0.15
 
 
 def load_state() -> dict:
@@ -693,7 +694,7 @@ class IslandView(NSView):
             traceback.print_exc()
 
         try:
-            # 紫粉圆点子视图（紧凑态居中）
+            # 紫粉圆点子视图（紧凑态居中）+ Core Animation 呼吸动画
             cx = COMPACT_W / 2.0
             cy = COMPACT_H / 2.0
             dot_size = 16.0
@@ -705,8 +706,14 @@ class IslandView(NSView):
             if dot_layer is not None:
                 dot_layer.setBackgroundColor_(NSColor.systemPinkColor().CGColor())
                 dot_layer.setCornerRadius_(dot_size / 2.0)
+                # 给光点加发光阴影 + 呼吸动画（GPU 渲染，零 CPU 开销）
+                dot_layer.setShadowColor_(NSColor.systemPinkColor().CGColor())
+                dot_layer.setShadowOpacity_(0.85)
+                dot_layer.setShadowRadius_(8.0)
+                dot_layer.setShadowOffset_((0.0, 0.0))
+                self._add_breathe_animation(dot_layer)
             self.addSubview_(self.dot_view)
-            print("[island] dot_view added", file=sys.stderr)
+            print("[island] dot_view added with breathe anim", file=sys.stderr)
 
             # 按钮 1：开/关控制面板（SF Symbol "macwindow"）
             self.panel_btn = self._make_button(
@@ -789,6 +796,49 @@ class IslandView(NSView):
         btn.setHidden_(True)
         return btn
 
+    @objc.python_method
+    def _add_breathe_animation(self, layer):
+        """给光点 layer 加呼吸动画 + 阴影脉冲（Core Animation GPU 渲染，零 CPU）"""
+        try:
+            from Quartz import CABasicAnimation, CAMediaTimingFunction  # type: ignore[import-not-found]
+            # 1) 透明度呼吸：0.55 ↔ 1.0
+            opacity_ani = CABasicAnimation.animationWithKeyPath_("opacity")
+            opacity_ani.setFromValue_(0.55)
+            opacity_ani.setToValue_(1.0)
+            opacity_ani.setDuration_(1.6)
+            opacity_ani.setAutoreverses_(True)
+            opacity_ani.setRepeatCount_(1e10)  # 无限循环
+            opacity_ani.setTimingFunction_(
+                CAMediaTimingFunction.functionWithName_("easeInEaseOut")
+            )
+            layer.addAnimation_forKey_(opacity_ani, "breathe-opacity")
+
+            # 2) 缩放呼吸：90% ↔ 110%
+            scale_ani = CABasicAnimation.animationWithKeyPath_("transform.scale")
+            scale_ani.setFromValue_(0.9)
+            scale_ani.setToValue_(1.15)
+            scale_ani.setDuration_(1.6)
+            scale_ani.setAutoreverses_(True)
+            scale_ani.setRepeatCount_(1e10)
+            scale_ani.setTimingFunction_(
+                CAMediaTimingFunction.functionWithName_("easeInEaseOut")
+            )
+            layer.addAnimation_forKey_(scale_ani, "breathe-scale")
+
+            # 3) 阴影发光脉冲：6 ↔ 14
+            shadow_ani = CABasicAnimation.animationWithKeyPath_("shadowRadius")
+            shadow_ani.setFromValue_(6.0)
+            shadow_ani.setToValue_(14.0)
+            shadow_ani.setDuration_(1.6)
+            shadow_ani.setAutoreverses_(True)
+            shadow_ani.setRepeatCount_(1e10)
+            shadow_ani.setTimingFunction_(
+                CAMediaTimingFunction.functionWithName_("easeInEaseOut")
+            )
+            layer.addAnimation_forKey_(shadow_ani, "breathe-shadow")
+        except Exception as e:
+            print(f"[island] breathe anim failed: {e}", file=sys.stderr)
+
     def onClickPanel_(self, _sender):
         toggle_panel_window()
 
@@ -804,11 +854,8 @@ class IslandView(NSView):
         self.arrange_idx = (idx + 1) % len(seq)
 
     def onClickChrome_(self, _sender):
-        # 单击 Chrome 按钮 → toggle 浮层显示
-        # 浮层里有「桌面堆叠」按钮 + 所有窗口的 tab 列表
-        if self.chrome_popover is None:
-            self.chrome_popover = ChromePopover.alloc().init()
-        self.chrome_popover.toggle(self.chrome_btn)
+        # 单击 Chrome 按钮 → 直接桌面堆叠所有 Chrome 窗口
+        trigger_chrome_stack()
 
     def viewDidMoveToWindow(self):
         try:
