@@ -52,14 +52,20 @@ import objc  # type: ignore[import-not-found]
 from AppKit import (  # type: ignore[import-not-found]
     NSApplication,
     NSApp,
+    NSAttributedString,
     NSBackingStoreBuffered,
     NSButton,
     NSColor,
     NSEvent,
     NSFont,
+    NSFontAttributeName,
+    NSForegroundColorAttributeName,
     NSImage,
     NSImageOnly,
+    NSScrollView,
+    NSScreen,
     NSStatusWindowLevel,
+    NSTextField,
     NSTrackingActiveAlways,
     NSTrackingArea,
     NSTrackingInVisibleRect,
@@ -331,6 +337,300 @@ def open_panel_window() -> None:
         pass
 
 
+# === Chrome 浮层窗口（独立 NSWindow，不用 NSPopover 避免 PyObjC 踩坑）===
+POPOVER_W = 360
+POPOVER_H = 460
+POPOVER_HEADER_H = 56
+POPOVER_PAD = 10
+POPOVER_TAB_ROW_H = 38
+
+
+class ChromePopover(NSObject):
+    """Chrome 窗口/tab 浮层。click 灵动岛 Chrome 按钮时 toggle 显示。"""
+
+    def init(self):
+        self = objc.super(ChromePopover, self).init()
+        if self is None:
+            return None
+        self.window = None
+        self.list_view = None
+        self.scroll_view = None
+        self.title_label = None
+        return self
+
+    def _build_window(self):
+        rect = ((0.0, 0.0), (float(POPOVER_W), float(POPOVER_H)))
+        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect, NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False
+        )
+        win.setBackgroundColor_(NSColor.clearColor())
+        win.setOpaque_(False)
+        win.setHasShadow_(True)
+        win.setLevel_(NSStatusWindowLevel)
+        win.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorStationary
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+        )
+        win.setMovable_(False)
+
+        # 主容器 view（半透明深色背景 + 大圆角）
+        content = NSView.alloc().initWithFrame_(((0, 0), (POPOVER_W, POPOVER_H)))
+        content.setWantsLayer_(True)
+        content.layer().setBackgroundColor_(
+            NSColor.colorWithRed_green_blue_alpha_(0.06, 0.05, 0.08, 0.94).CGColor()
+        )
+        content.layer().setCornerRadius_(14.0)
+        content.layer().setBorderColor_(
+            NSColor.colorWithWhite_alpha_(1.0, 0.10).CGColor()
+        )
+        content.layer().setBorderWidth_(0.5)
+
+        # 顶部头部区
+        header_y = POPOVER_H - POPOVER_HEADER_H
+        # 标题
+        self.title_label = NSTextField.alloc().initWithFrame_(
+            ((POPOVER_PAD + 4, header_y + 28), (POPOVER_W - 2 * POPOVER_PAD - 8, 20))
+        )
+        self.title_label.setStringValue_("Chrome 窗口（加载中…）")
+        self.title_label.setBezeled_(False)
+        self.title_label.setDrawsBackground_(False)
+        self.title_label.setEditable_(False)
+        self.title_label.setSelectable_(False)
+        self.title_label.setBordered_(False)
+        self.title_label.setFont_(NSFont.boldSystemFontOfSize_(12.0))
+        self.title_label.setTextColor_(NSColor.colorWithWhite_alpha_(0.9, 1.0))
+        content.addSubview_(self.title_label)
+
+        # 「桌面堆叠」按钮
+        stack_btn = NSButton.alloc().initWithFrame_(
+            ((POPOVER_PAD, header_y + 4), (160, 22))
+        )
+        stack_btn.setTitle_("📚 桌面堆叠")
+        stack_btn.setBezelStyle_(1)  # NSBezelStyleRounded
+        stack_btn.setTarget_(self)
+        stack_btn.setAction_(b"_onStackClicked:")
+        content.addSubview_(stack_btn)
+
+        # 「↻ 刷新」按钮
+        refresh_btn = NSButton.alloc().initWithFrame_(
+            ((POPOVER_W - POPOVER_PAD - 80, header_y + 4), (80, 22))
+        )
+        refresh_btn.setTitle_("↻ 刷新")
+        refresh_btn.setBezelStyle_(1)
+        refresh_btn.setTarget_(self)
+        refresh_btn.setAction_(b"_onRefreshClicked:")
+        content.addSubview_(refresh_btn)
+
+        # 列表 ScrollView
+        scroll = NSScrollView.alloc().initWithFrame_(
+            ((POPOVER_PAD, POPOVER_PAD), (POPOVER_W - 2 * POPOVER_PAD, POPOVER_H - POPOVER_HEADER_H - POPOVER_PAD))
+        )
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(0)  # NSNoBorder
+        scroll.setDrawsBackground_(False)
+        list_view = NSView.alloc().initWithFrame_(
+            ((0, 0), (POPOVER_W - 2 * POPOVER_PAD, 1))
+        )
+        list_view.setWantsLayer_(True)
+        scroll.setDocumentView_(list_view)
+        content.addSubview_(scroll)
+
+        win.setContentView_(content)
+        self.window = win
+        self.list_view = list_view
+        self.scroll_view = scroll
+
+    def is_visible(self) -> bool:
+        return bool(self.window and not self.window.isReleasedWhenClosed() and self.window.isVisible())
+
+    def show_below(self, anchor_view) -> None:
+        """anchor_view 是 chrome_btn，把 popover 显示在它正下方"""
+        if self.window is None:
+            self._build_window()
+        # 计算 popover 应该显示的屏幕坐标（anchor_view 下方）
+        if anchor_view and anchor_view.window():
+            try:
+                anchor_rect_in_win = anchor_view.convertRect_toView_(
+                    anchor_view.bounds(), None
+                )
+                anchor_rect_in_screen = anchor_view.window().convertRectToScreen_(
+                    anchor_rect_in_win
+                )
+                ax = anchor_rect_in_screen.origin.x + anchor_rect_in_screen.size.width / 2.0
+                ay = anchor_rect_in_screen.origin.y
+                # popover 居中对齐 anchor，紧贴下方
+                px = ax - POPOVER_W / 2.0
+                py = ay - POPOVER_H - 10
+                self.window.setFrameOrigin_(((px, py)))
+            except Exception:
+                pass
+        self.window.orderFront_(None)
+        self.refresh_data()
+
+    def hide(self) -> None:
+        if self.window:
+            self.window.orderOut_(None)
+
+    def toggle(self, anchor_view) -> None:
+        if self.is_visible():
+            self.hide()
+        else:
+            self.show_below(anchor_view)
+
+    def refresh_data(self) -> None:
+        """从 panel server 拉 Chrome 窗口列表，渲染列表"""
+        import threading
+
+        def do_fetch():
+            try:
+                with urllib.request.urlopen(
+                    f"{PANEL_URL}/api/chrome/windows", timeout=3
+                ) as r:
+                    data = json.loads(r.read())
+                    windows = data.get("windows", []) if isinstance(data, dict) else []
+            except Exception as e:
+                print(f"[island popover] fetch failed: {e}", file=sys.stderr)
+                windows = []
+            try:
+                from Foundation import NSOperationQueue  # type: ignore[import-not-found]
+                NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    lambda: self._render_list(windows)
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=do_fetch, daemon=True).start()
+
+    def _render_list(self, windows: list) -> None:
+        """主线程：清空 list_view + 添加每个 tab 一个 NSButton"""
+        if self.list_view is None:
+            return
+        for v in list(self.list_view.subviews()):
+            v.removeFromSuperview()
+        if self.title_label is not None:
+            total_tabs = sum((w.get("tabCount", 0) for w in windows))
+            self.title_label.setStringValue_(
+                f"Chrome 窗口 · {len(windows)} 个窗口 · {total_tabs} 个 tab"
+            )
+        if not windows:
+            self._add_empty_label()
+            return
+
+        # 计算总高度并设 list_view 大小
+        row_per_win_header = 24
+        total_h = 0
+        for w in windows:
+            total_h += row_per_win_header
+            total_h += POPOVER_TAB_ROW_H * len(w.get("tabs", []))
+            total_h += 6  # 窗口间隔
+        list_w = POPOVER_W - 2 * POPOVER_PAD
+        self.list_view.setFrame_(((0, 0), (list_w, max(total_h, 1))))
+
+        # 从底部往上排（NSView 坐标系 y 向上）
+        # 反转顺序，让"窗口 1"在视觉上方（即 y 大）
+        y_cursor = total_h
+        for w in windows:
+            # 窗口标题
+            y_cursor -= row_per_win_header
+            title = w.get("title", "(无标题窗口)")
+            count = w.get("tabCount", 0)
+            label = NSTextField.alloc().initWithFrame_(
+                ((4, y_cursor + 4), (list_w - 8, 18))
+            )
+            label.setStringValue_(f"  {title}  ·  {count} tab")
+            label.setBezeled_(False)
+            label.setDrawsBackground_(False)
+            label.setEditable_(False)
+            label.setSelectable_(False)
+            label.setBordered_(False)
+            label.setFont_(NSFont.boldSystemFontOfSize_(11.0))
+            label.setTextColor_(NSColor.colorWithRed_green_blue_alpha_(0.55, 0.65, 0.95, 1.0))
+            self.list_view.addSubview_(label)
+
+            # 每个 tab 一个 button
+            for t in w.get("tabs", []):
+                y_cursor -= POPOVER_TAB_ROW_H
+                btn = NSButton.alloc().initWithFrame_(
+                    ((6, y_cursor + 2), (list_w - 12, POPOVER_TAB_ROW_H - 4))
+                )
+                tab_title = (t.get("title") or "(无标题)").strip() or "(无标题)"
+                if len(tab_title) > 50:
+                    tab_title = tab_title[:48] + "…"
+                btn.setTitle_(tab_title)
+                btn.setBordered_(False)
+                btn.setBezelStyle_(0)
+                btn.setAlignment_(0)  # NSTextAlignmentLeft
+                btn.setFont_(NSFont.systemFontOfSize_(12.0))
+                btn.setTarget_(self)
+                btn.setAction_(b"_onTabClicked:")
+                # 把 windowId 和 tabIndex 编码到 tag 里：高 32 位 wid，低 16 位 tidx
+                wid = int(w.get("id", 0)) & 0xFFFFFFFF
+                tidx = int(t.get("idx", 0)) & 0xFFFF
+                btn.setTag_((wid << 16) | tidx)
+                # 浅色 hover 反馈
+                btn.setWantsLayer_(True)
+                btn.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
+                btn.layer().setCornerRadius_(6.0)
+                self.list_view.addSubview_(btn)
+
+            y_cursor -= 6
+
+    def _add_empty_label(self):
+        list_w = POPOVER_W - 2 * POPOVER_PAD
+        self.list_view.setFrame_(((0, 0), (list_w, 100)))
+        label = NSTextField.alloc().initWithFrame_(((10, 30), (list_w - 20, 40)))
+        label.setStringValue_("没有检测到 Chrome 窗口\n请先打开 Chrome 并授权自动化权限")
+        label.setBezeled_(False)
+        label.setDrawsBackground_(False)
+        label.setEditable_(False)
+        label.setSelectable_(False)
+        label.setBordered_(False)
+        label.setFont_(NSFont.systemFontOfSize_(11.0))
+        label.setTextColor_(NSColor.colorWithWhite_alpha_(0.5, 1.0))
+        label.setAlignment_(2)  # NSTextAlignmentCenter
+        self.list_view.addSubview_(label)
+
+    def _onStackClicked_(self, _sender):
+        trigger_chrome_stack()
+        # 堆叠后稍等再刷新（让 osascript 完成）
+        import threading
+        def delayed_refresh():
+            import time
+            time.sleep(0.4)
+            try:
+                from Foundation import NSOperationQueue
+                NSOperationQueue.mainQueue().addOperationWithBlock_(self.refresh_data)
+            except Exception:
+                pass
+        threading.Thread(target=delayed_refresh, daemon=True).start()
+
+    def _onRefreshClicked_(self, _sender):
+        self.refresh_data()
+
+    def _onTabClicked_(self, sender):
+        tag = int(sender.tag())
+        wid = (tag >> 16) & 0xFFFFFFFF
+        tidx = tag & 0xFFFF
+        if wid <= 0 or tidx <= 0:
+            return
+        # 调 panel 的 focus API
+        try:
+            body = json.dumps({"windowId": wid, "tabIndex": tidx}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{PANEL_URL}/api/chrome/focus",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=3) as r:
+                r.read()
+        except Exception as e:
+            print(f"[island popover] focus failed: {e}", file=sys.stderr)
+        # 关闭浮层
+        self.hide()
+
+
 # pylint: disable=invalid-name
 class IslandView(NSView):
     """
@@ -357,6 +657,7 @@ class IslandView(NSView):
         self.chrome_btn = None
         self.arrange_btn = None
         self.arrange_idx = 0  # 排布序列当前索引
+        self.chrome_popover = None  # Chrome 浮层（懒加载）
         self.setWantsLayer_(True)
         print(f"[island] IslandView initWithFrame_ OK, frame={frame}", file=sys.stderr)
         return self
@@ -495,7 +796,11 @@ class IslandView(NSView):
         self.arrange_idx = (idx + 1) % len(seq)
 
     def onClickChrome_(self, _sender):
-        trigger_chrome_stack()
+        # 单击 Chrome 按钮 → toggle 浮层显示
+        # 浮层里有「桌面堆叠」按钮 + 所有窗口的 tab 列表
+        if self.chrome_popover is None:
+            self.chrome_popover = ChromePopover.alloc().init()
+        self.chrome_popover.toggle(self.chrome_btn)
 
     def viewDidMoveToWindow(self):
         try:
