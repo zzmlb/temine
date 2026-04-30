@@ -472,14 +472,10 @@ class StageWindow(NSObject):
     def _make_character_layer(self, frames_raw, color_rgba):
         """创建一个角色 CALayer + 帧动画"""
         try:
-            from Quartz import CAKeyframeAnimation  # type: ignore[import-not-found]
-            from QuartzCore import CALayer  # type: ignore[import-not-found]
-        except Exception:
-            try:
-                from Quartz import CALayer, CAKeyframeAnimation  # type: ignore[import-not-found]
-            except Exception as e:
-                print(f"[stage] CALayer import failed: {e}", file=sys.stderr)
-                return None
+            from Quartz import CALayer, CAKeyframeAnimation  # type: ignore[import-not-found]
+        except Exception as e:
+            print(f"[stage] CALayer import FAILED: {e}", file=sys.stderr)
+            return None
         # 渲染所有帧
         frames = []
         for grid in frames_raw:
@@ -487,6 +483,7 @@ class StageWindow(NSObject):
             if img is not None:
                 frames.append(img)
         if not frames:
+            print(f"[stage] frame render FAILED for color={color_rgba}", file=sys.stderr)
             return None
         layer = CALayer.layer()
         layer.setBounds_(((0, 0), (SPRITE_W, SPRITE_H)))
@@ -500,6 +497,7 @@ class StageWindow(NSObject):
         contents_ani.setRepeatCount_(1e10)
         contents_ani.setCalculationMode_("discrete")
         layer.addAnimation_forKey_(contents_ani, "frames")
+        print(f"[stage] character layer OK, {len(frames)} frames", file=sys.stderr)
         return layer
 
     @objc.python_method
