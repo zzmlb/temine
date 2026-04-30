@@ -357,15 +357,16 @@ end run
     console.log(`🐍 使用系统 Python: ${py3}`);
 
     // 2. 检查 pyobjc 是否已装到系统 Python
+    // 注意：必须含 Quartz（CoreAnimation 在那里）才能跑动画
     let needPip = false;
     try {
-      ex(`${py3} -c "import objc, AppKit"`, { stdio: 'ignore' });
+      ex(`${py3} -c "import objc, AppKit, Quartz"`, { stdio: 'ignore' });
     } catch {
       needPip = true;
     }
     if (needPip) {
-      console.log('📦 安装依赖 pyobjc-core / pyobjc-framework-Cocoa 到系统 Python（首次约 1-3 分钟）…');
-      const baseCmd = `${py3} -m pip install --user pyobjc-core pyobjc-framework-Cocoa`;
+      console.log('📦 安装依赖 pyobjc-core / pyobjc-framework-Cocoa / pyobjc-framework-Quartz 到系统 Python（首次约 1-3 分钟）…');
+      const baseCmd = `${py3} -m pip install --user pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-Quartz`;
       let pipOk = false;
       try {
         // 优先：不带 --break-system-packages（系统 Python 通常不需要）
