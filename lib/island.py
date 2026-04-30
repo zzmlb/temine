@@ -431,11 +431,11 @@ HUMAN_WALK2 = [
 DINO_SLEEP = [
     "...........",
     "...........",
-    "..........",
+    "...........",
     "....XXXX...",
     "...XXXXXX..",
     "..XXXXXXXX.",
-    ".XXXXXXXXXX",
+    ".XXXXXXXXX.",
     "XX.XX.XX.XX",
     "..X..X..X..",
 ]
@@ -483,22 +483,15 @@ EXCLAIM = [
     ".X.",
 ]
 
-# 角色 sprite 尺寸（每像素 scale=2 → 屏幕像素）
-HUMAN_W = 8 * PIXEL_SCALE   # 16
-HUMAN_H = 11 * PIXEL_SCALE  # 22
-DINO_W = 11 * PIXEL_SCALE   # 22
-DINO_H = 9 * PIXEL_SCALE    # 18
-ZZZ_W = 5 * PIXEL_SCALE     # 10
-ZZZ_H = 3 * PIXEL_SCALE     # 6
-EXCLAIM_W = 3 * PIXEL_SCALE # 6
-EXCLAIM_H = 5 * PIXEL_SCALE # 10
-
+# === 舞台 + 像素尺寸常量（必须在 sprite 尺寸常量之前定义）===
 # 舞台尺寸：紧贴胶囊一圈（外圈薄环带 = 陆地，内部 = 山洞）
 # 胶囊 110×48 居中在舞台 → 胶囊位于 (20, 16)~(130, 64)
 # 外圈环带宽 16px（上下左右各 16），舞台 150×80
 STAGE_W = 150
 STAGE_H = 80
-PIXEL_SCALE = 2
+PIXEL_SCALE = 2  # 每像素 scale=2 → 屏幕像素
+STORY_DURATION = 16.0  # 一个完整探险剧情循环 16 秒
+
 # 胶囊在舞台坐标系内的边界
 CAVE_LEFT = 20.0
 CAVE_RIGHT = 130.0
@@ -508,9 +501,19 @@ CAVE_CY = (CAVE_TOP + CAVE_BOTTOM) / 2.0   # 40  胶囊垂直中心
 # 山洞内分层：上半（通道）和下半（深处恐龙窝）
 CAVE_UPPER_Y = CAVE_TOP + 12.0      # 28  小人走廊高度
 CAVE_LOWER_Y = CAVE_BOTTOM - 12.0   # 52  恐龙窝高度
+
+# 角色 sprite 尺寸（基于 PIXEL_SCALE）
+HUMAN_W = 8 * PIXEL_SCALE   # 16
+HUMAN_H = 11 * PIXEL_SCALE  # 22
+DINO_W = 11 * PIXEL_SCALE   # 22
+DINO_H = 9 * PIXEL_SCALE    # 18
+ZZZ_W = 5 * PIXEL_SCALE     # 10
+ZZZ_H = 3 * PIXEL_SCALE     # 6
+EXCLAIM_W = 3 * PIXEL_SCALE # 6
+EXCLAIM_H = 5 * PIXEL_SCALE # 10
+# 通用 sprite（旧的章鱼/螃蟹用，保留兼容）
 SPRITE_W = 11 * PIXEL_SCALE  # 22
 SPRITE_H = 8 * PIXEL_SCALE   # 16
-STORY_DURATION = 16.0  # 一个完整探险剧情循环 16 秒
 
 
 def _render_pixel_frame(grid: list, color_rgba: tuple, scale: int = PIXEL_SCALE):
