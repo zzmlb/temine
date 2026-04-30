@@ -339,76 +339,39 @@ def open_panel_window() -> None:
 
 
 # === 像素 sprite 待机动画 ===========================
-# 经典恐龙 walk cycle（参考 Chrome offline T-Rex，BSD 许可，简化版）
-# X = 有像素，. = 透明
-# 16x14 矩阵，每像素渲染成 PIXEL_SCALE 个屏幕像素
+# 经典 Space Invader 章鱼小怪物（11×8，对称像素，公共领域参考）
+# 4 帧循环：静止 → 摆触手 → 静止 → 摆触手（反向）
 
-DINO_FRAME_1 = """
-.....XXXXXX
-.....XXXXX.X
-.....XXXXX.
-.....XXXXX
-.X..XXXXXX
-.XXXXXXX
-.XXXXXX
-.XXXXX
-.X.XX.X
-""".strip("\n").split("\n")
-
-DINO_FRAME_2 = """
-.....XXXXXX
-.....XXXXX.X
-.....XXXXX.
-.....XXXXX
-.X..XXXXXX
-.XXXXXXX
-.XXXXXX
-.XXXXX
-.X.X.XX
-""".strip("\n").split("\n")
-
-DINO_FRAME_3 = DINO_FRAME_1
-DINO_FRAME_4 = DINO_FRAME_2
-
-# 也内置一个简单的"心跳"备选 sprite 作为 demo
-HEART_FRAMES_RAW = [
-    """
-....
-.XX.XX.
-XXXXXXX
-XXXXXXX
-.XXXXX.
-..XXX..
-...X...
-""",
-    """
-....
-XXX.XXX
-XXXXXXXXX
-XXXXXXXXX
-.XXXXXXX.
-..XXXXX..
-...XXX...
-....X....
-""",
+INVADER_F1 = [
+    "..X.....X..",
+    "...X...X...",
+    "..XXXXXXX..",
+    ".XX.XXX.XX.",
+    "XXXXXXXXXXX",
+    "X.XXXXXXX.X",
+    "X.X.....X.X",
+    "...XX.XX...",
 ]
-
-PIXEL_SCALE = 2  # 每个 sprite 像素 = 2x2 屏幕像素
-DINO_FRAMES_RAW = [DINO_FRAME_1, DINO_FRAME_2, DINO_FRAME_3, DINO_FRAME_4]
+INVADER_F2 = [
+    "..X.....X..",
+    "X..X...X..X",
+    "X.XXXXXXX.X",
+    "XXX.XXX.XXX",
+    "XXXXXXXXXXX",
+    ".XXXXXXXXX.",
+    "..X.....X..",
+    ".X.......X.",
+]
+SPRITE_FRAMES = [INVADER_F1, INVADER_F2, INVADER_F1, INVADER_F2]
+PIXEL_SCALE = 3  # 每像素 3x3 屏幕像素 → sprite 视觉 33×24
 
 
 def _render_pixel_frame(grid: list, color_rgba: tuple, scale: int = PIXEL_SCALE):
-    """字符矩阵 → CGImage（用 Quartz CGBitmapContext，省 CPU）"""
+    """字符矩阵 → NSImage（用 NSBezierPath + lockFocus，PyObjC 最稳路径）"""
     try:
-        from Quartz import (  # type: ignore[import-not-found]
-            CGBitmapContextCreate,
-            CGBitmapContextCreateImage,
-            CGColorSpaceCreateDeviceRGB,
-            CGContextSetRGBFillColor,
-            CGContextFillRect,
-            kCGImageAlphaPremultipliedLast,
-        )
-    except Exception:
+        from AppKit import NSImage, NSBezierPath as _NSBP, NSColor as _NSC  # type: ignore[import-not-found]
+    except Exception as e:
+        print(f"[island] sprite render import failed: {e}", file=sys.stderr)
         return None
     h = len(grid)
     w = max(len(row) for row in grid) if grid else 0
@@ -416,20 +379,27 @@ def _render_pixel_frame(grid: list, color_rgba: tuple, scale: int = PIXEL_SCALE)
         return None
     width = w * scale
     height = h * scale
-    cs = CGColorSpaceCreateDeviceRGB()
-    ctx = CGBitmapContextCreate(
-        None, width, height, 8, width * 4, cs, kCGImageAlphaPremultipliedLast
-    )
-    r, g, b, a = color_rgba
-    CGContextSetRGBFillColor(ctx, r, g, b, a)
-    for y, row in enumerate(grid):
-        for x, c in enumerate(row):
-            if c == "X":
-                # CGContext 坐标 y 向上：反转
-                CGContextFillRect(
-                    ctx, ((x * scale, (h - 1 - y) * scale), (scale, scale))
-                )
-    return CGBitmapContextCreateImage(ctx)
+    image = NSImage.alloc().initWithSize_((float(width), float(height)))
+    try:
+        image.lockFocus()
+        r, g, b, a = color_rgba
+        _NSC.colorWithRed_green_blue_alpha_(r, g, b, a).set()
+        for y, row in enumerate(grid):
+            # NSImage 坐标 y 向上，所以 y=0 是底部；让矩阵顶行对齐图像顶部 → 翻转
+            for x, c in enumerate(row):
+                if c == "X":
+                    _NSBP.fillRect_(
+                        ((float(x * scale), float((h - 1 - y) * scale)), (float(scale), float(scale)))
+                    )
+        image.unlockFocus()
+    except Exception as e:
+        print(f"[island] sprite render fillRect failed: {e}", file=sys.stderr)
+        try:
+            image.unlockFocus()
+        except Exception:
+            pass
+        return None
+    return image
 
 
 # === Chrome 浮层窗口（独立 NSWindow，不用 NSPopover 避免 PyObjC 踩坑）===
@@ -788,12 +758,12 @@ class IslandView(NSView):
             traceback.print_exc()
 
         try:
-            # 紧凑态：像素 sprite 动画（恐龙 walk cycle）+ 备用紫粉光点
-            # 用 CALayer + CAKeyframeAnimation 切换 contents（GPU 渲染，零 CPU）
+            # 紧凑态椭圆胶囊（110×48）中心放像素小怪物动画
+            # 11×8 sprite × scale=3 → 33×24 屏幕像素，居中显示
             cx = COMPACT_W / 2.0
             cy = COMPACT_H / 2.0
-            sprite_w = 36.0
-            sprite_h = 28.0
+            sprite_w = 11 * PIXEL_SCALE  # 33
+            sprite_h = 8 * PIXEL_SCALE   # 24
             self.dot_view = NSView.alloc().initWithFrame_(
                 NSMakeRect(cx - sprite_w / 2.0, cy - sprite_h / 2.0, sprite_w, sprite_h)
             )
@@ -803,24 +773,23 @@ class IslandView(NSView):
                 # 关键：保持像素清晰，不被反锯齿模糊
                 sprite_layer.setMagnificationFilter_("nearest")
                 sprite_layer.setMinificationFilter_("nearest")
-                # 渲染恐龙 4 帧
-                sprite_color = (0.97, 0.45, 0.78, 1.0)  # 紫粉色保持品牌感
+                # 渲染 sprite 帧（紫粉色保持品牌一致）
+                sprite_color = (0.97, 0.45, 0.78, 1.0)
                 frames = []
-                for grid in DINO_FRAMES_RAW:
-                    cg = _render_pixel_frame(grid, sprite_color, scale=2)
-                    if cg is not None:
-                        frames.append(cg)
+                for grid in SPRITE_FRAMES:
+                    img = _render_pixel_frame(grid, sprite_color, scale=PIXEL_SCALE)
+                    if img is not None:
+                        frames.append(img)
                 if frames:
-                    # 设置初始帧
                     sprite_layer.setContents_(frames[0])
-                    self._add_sprite_animation(sprite_layer, frames)
-                    print(f"[island] sprite animation: {len(frames)} frames", file=sys.stderr)
+                    self._add_sprite_animation(sprite_layer, frames, fps=3.0)
+                    print(f"[island] ✓ sprite OK: {len(frames)} frames {sprite_w}x{sprite_h}", file=sys.stderr)
                 else:
                     # 渲染失败 → fallback 紫粉光点
                     sprite_layer.setBackgroundColor_(NSColor.systemPinkColor().CGColor())
                     sprite_layer.setCornerRadius_(min(sprite_w, sprite_h) / 2.0)
                     self._add_breathe_animation(sprite_layer)
-                    print("[island] sprite render failed, fallback to dot", file=sys.stderr)
+                    print("[island] ✗ sprite FAILED, fallback to dot", file=sys.stderr)
             self.addSubview_(self.dot_view)
 
             # 按钮 1：开/关控制面板（SF Symbol "macwindow"）
