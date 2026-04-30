@@ -80,15 +80,18 @@ STATE_FILE = STATE_DIR / "state.json"
 
 # 紧凑/展开**高度必须相同**，否则鼠标会在垂直方向出展开窗口边界，引发抖动
 COMPACT_W, COMPACT_H = 110, 48
-EXPANDED_W, EXPANDED_H = 200, 48
+EXPANDED_W, EXPANDED_H = 260, 48  # 加了 Chrome 按钮，需要更宽
 DRAG_THRESHOLD_PX = 4
 COLLAPSE_DELAY_SEC = 0.15  # 鼠标退出后延迟收缩，防抖
 
-# 展开态两个按钮的位置（相对窗口左下角）
+# 展开态 3 个按钮的位置（相对窗口左下角）
 BTN_SIZE = 36
 BTN_Y = (EXPANDED_H - BTN_SIZE) / 2.0  # 6
-BTN1_X = 20.0   # 按钮1：开/关控制面板
-BTN2_X = 144.0  # 按钮2：触发自动排布
+BTN_GAP = 16
+BTN1_X = 20.0                                  # 按钮1：开/关控制面板
+BTN2_X = BTN1_X + BTN_SIZE + BTN_GAP           # 按钮2：Chrome 堆叠 (72)
+BTN3_X = BTN2_X + BTN_SIZE + BTN_GAP           # 按钮3：触发自动排布 (124)
+BTN4_X = BTN3_X + BTN_SIZE + BTN_GAP           # 按钮4：隐藏（如果以后加）
 
 
 def load_state() -> dict:
@@ -158,15 +161,58 @@ def ensure_panel_running() -> bool:
 
 
 # 排布序列：每次按按钮 2 循环切换到下一个
-ARRANGE_SEQUENCE = [
-    {"name": "全屏", "region": "full", "cols": 0},
-    {"name": "上 1/2", "region": "top-half", "cols": 0},
-    {"name": "上 2/3", "region": "top-2-3", "cols": 0},
-    {"name": "下 1/2", "region": "bottom-half", "cols": 0},
-    {"name": "左 1/2", "region": "left-half", "cols": 0},
-    {"name": "右 1/2", "region": "right-half", "cols": 0},
-    {"name": "左 2/3", "region": "left-2-3", "cols": 0},
-]
+# 排版区域全集 + 中文名（用户在面板里激活几个就循环几个）
+ALL_REGIONS = {
+    "full": "全屏",
+    "top-half": "上 1/2",
+    "top-2-3": "上 2/3",
+    "bottom-half": "下 1/2",
+    "left-half": "左 1/2",
+    "right-half": "右 1/2",
+    "left-2-3": "左 2/3",
+    "left-1-3": "左 1/3",
+}
+DEFAULT_ARRANGE_SEQUENCE = ["full", "top-half", "bottom-half"]
+ISLAND_CFG_FILE = Path.home() / ".temine" / "island-config.json"
+
+
+def load_arrange_sequence() -> list[dict]:
+    """从 ~/.temine/island-config.json 读激活的排版列表，每次按按钮都重新读（支持热更新）"""
+    try:
+        cfg = json.loads(ISLAND_CFG_FILE.read_text())
+        seq = cfg.get("arrangeSequence", [])
+        if isinstance(seq, list) and seq:
+            valid = [r for r in seq if r in ALL_REGIONS]
+            if valid:
+                return [{"name": ALL_REGIONS[r], "region": r, "cols": 0} for r in valid]
+    except Exception:
+        pass
+    return [{"name": ALL_REGIONS[r], "region": r, "cols": 0} for r in DEFAULT_ARRANGE_SEQUENCE]
+
+
+def trigger_chrome_stack() -> None:
+    """调 panel 的 /api/chrome/stack 让 Chrome 窗口在桌面上堆叠"""
+    if not ensure_panel_running():
+        return
+    try:
+        from AppKit import NSScreen  # type: ignore[import-not-found]
+        screen = NSScreen.mainScreen()
+        if screen:
+            sz = screen.visibleFrame().size
+            sw, sh = int(sz.width), int(sz.height)
+        else:
+            sw, sh = 1512, 944
+        body = json.dumps({"screenWidth": sw, "screenHeight": sh, "reveal": 80}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{PANEL_URL}/api/chrome/stack",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            r.read()
+    except Exception as e:
+        print(f"[island] chrome stack failed: {e}", file=sys.stderr)
 
 
 def trigger_arrange(region: str = "full", cols: int = 0) -> None:
@@ -308,6 +354,7 @@ class IslandView(NSView):
         self.drag_start_mouse_global = None
         self.dot_view = None
         self.panel_btn = None
+        self.chrome_btn = None
         self.arrange_btn = None
         self.arrange_idx = 0  # 排布序列当前索引
         self.setWantsLayer_(True)
@@ -361,11 +408,20 @@ class IslandView(NSView):
             )
             self.addSubview_(self.panel_btn)
 
-            # 按钮 2：循环切换排布（SF Symbol "rectangle.split.3x1"）
+            # 按钮 2：Chrome 桌面堆叠（SF Symbol "safari" / globe）
+            self.chrome_btn = self._make_button(
+                ["safari", "safari.fill", "globe"],
+                "◎",
+                BTN2_X,
+                b"onClickChrome:",
+            )
+            self.addSubview_(self.chrome_btn)
+
+            # 按钮 3：循环切换排布（SF Symbol "rectangle.3.group.fill"）
             self.arrange_btn = self._make_button(
                 ["rectangle.3.group.fill", "square.grid.3x1.below.line.grid.1x2"],
                 "⊞",
-                BTN2_X,
+                BTN3_X,
                 b"onClickArrange:",
             )
             self.addSubview_(self.arrange_btn)
@@ -428,12 +484,18 @@ class IslandView(NSView):
         toggle_panel_window()
 
     def onClickArrange_(self, _sender):
-        # 循环到下一个排布
-        idx = self.arrange_idx % len(ARRANGE_SEQUENCE)
-        item = ARRANGE_SEQUENCE[idx]
+        # 每次重新读 config，支持面板里改了配置后立即生效
+        seq = load_arrange_sequence()
+        if not seq:
+            return
+        idx = self.arrange_idx % len(seq)
+        item = seq[idx]
         print(f"[island] arrange → {item['name']} ({item['region']})", file=sys.stderr)
         trigger_arrange(region=item["region"], cols=item["cols"])
-        self.arrange_idx = (idx + 1) % len(ARRANGE_SEQUENCE)
+        self.arrange_idx = (idx + 1) % len(seq)
+
+    def onClickChrome_(self, _sender):
+        trigger_chrome_stack()
 
     def viewDidMoveToWindow(self):
         try:
@@ -516,10 +578,14 @@ class IslandView(NSView):
             # 展开：圆点隐藏，两个按钮显示
             self.dot_view.setHidden_(True)
             self.panel_btn.setHidden_(False)
+            if self.chrome_btn is not None:
+                self.chrome_btn.setHidden_(False)
             self.arrange_btn.setHidden_(False)
         else:
             # 紧凑：圆点居中，按钮隐藏
             self.panel_btn.setHidden_(True)
+            if self.chrome_btn is not None:
+                self.chrome_btn.setHidden_(True)
             self.arrange_btn.setHidden_(True)
             self.dot_view.setHidden_(False)
             dot_size = 16.0
