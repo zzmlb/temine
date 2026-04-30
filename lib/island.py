@@ -358,6 +358,7 @@ class ChromePopover(NSObject):
         self.title_label = None
         return self
 
+    @objc.python_method
     def _build_window(self):
         rect = ((0.0, 0.0), (float(POPOVER_W), float(POPOVER_H)))
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -441,9 +442,11 @@ class ChromePopover(NSObject):
         self.list_view = list_view
         self.scroll_view = scroll
 
+    @objc.python_method
     def is_visible(self) -> bool:
         return bool(self.window and not self.window.isReleasedWhenClosed() and self.window.isVisible())
 
+    @objc.python_method
     def show_below(self, anchor_view) -> None:
         """anchor_view 是 chrome_btn，把 popover 显示在它正下方"""
         if self.window is None:
@@ -468,16 +471,19 @@ class ChromePopover(NSObject):
         self.window.orderFront_(None)
         self.refresh_data()
 
+    @objc.python_method
     def hide(self) -> None:
         if self.window:
             self.window.orderOut_(None)
 
+    @objc.python_method
     def toggle(self, anchor_view) -> None:
         if self.is_visible():
             self.hide()
         else:
             self.show_below(anchor_view)
 
+    @objc.python_method
     def refresh_data(self) -> None:
         """从 panel server 拉 Chrome 窗口列表，渲染列表"""
         import threading
@@ -502,6 +508,7 @@ class ChromePopover(NSObject):
 
         threading.Thread(target=do_fetch, daemon=True).start()
 
+    @objc.python_method
     def _render_list(self, windows: list) -> None:
         """主线程：清空 list_view + 添加每个 tab 一个 NSButton"""
         if self.list_view is None:
@@ -576,6 +583,7 @@ class ChromePopover(NSObject):
 
             y_cursor -= 6
 
+    @objc.python_method
     def _add_empty_label(self):
         list_w = POPOVER_W - 2 * POPOVER_PAD
         self.list_view.setFrame_(((0, 0), (list_w, 100)))
