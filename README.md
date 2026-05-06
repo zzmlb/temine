@@ -1,15 +1,13 @@
 # Temine
 
-> **AI 编程终端编排器** — 管理你的所有 AI 代理
+> **macOS 上的 AI 终端编排器 + Dynamic Island 浮岛**
 >
-> tmux 管理窗格，iTerm2 提升终端，Warp 让 AI 帮你写命令，Cursor 让 AI 帮你写代码 — 而 **Temine 管理你的所有 AI 代理**。
->
-> v0.8: SSH 快捷启动 + 全局录制开关
+> 一键打开 / 排布多个 Claude Code 窗口；桌面右上的小胶囊浮岛 toggle Web 面板、整理 Chrome、批量排布终端。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-green.svg)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos)
-[![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)]()
+[![Version](https://img.shields.io/badge/version-0.15.2-blue.svg)]()
 
 [中文](#中文) | [English](#english)
 
@@ -17,296 +15,149 @@
 
 ## 中文
 
-### 为什么需要 Temine？
+### 是什么
 
-当你同时运行 4-8 个 Claude Code 实例时，**没有任何现有工具**能够：
-- 一键将它们排布到屏幕上
-- 实时感知哪个实例在等你确认
-- 在浏览器中总览所有实例状态
-- 在 AI 等你时推送系统通知
+当你同时跑多个 Claude Code / AI CLI 时，Temine 解决：
 
-Temine 填补了这个空白 — 它是目前**唯一的 AI CLI 编排工具**。
-
-### 功能对比
-
-| 功能 | tmux | iTerm2 | Warp | Zellij | Claude Code | Cursor | **Temine** |
-|------|:----:|:------:|:----:|:------:|:-----------:|:------:|:----------:|
-| 多窗口管理 | 虚拟窗格 | 分屏 | 分屏 | 虚拟窗格 | 无 | IDE 内 | **OS 级窗口** |
-| 一键批量排布 | 需脚本 | 需脚本 | — | Layout | — | — | **原生支持** |
-| AI 状态检测 | — | Triggers | — | — | 单实例 | IDE 内 | **多规则+置信度** |
-| 等待确认检测 | — | 可配置 | — | — | — | — | **原生支持** |
-| 系统通知 | 基础 | 可配置 | 基础 | — | — | IDE 内 | **AI 感知通知** |
-| Web 控制面板 | — | — | — | — | — | — | **内置** |
-| 实时状态推送 | — | — | — | — | — | — | **SSE** |
-| 输出记录+搜索 | 可配 | — | — | — | — | — | **命令/输出分离** |
-| 窗口标签+图标 | 可命名 | 可命名 | 可命名 | 可命名 | — | — | **自动匹配** |
-| SSH 批量启动 | 需脚本 | — | — | — | — | — | **Web 面板一键** |
-| 录制开关 | — | — | — | — | — | — | **全局+单窗口** |
-| 零依赖 | 系统包 | App | App | 需安装 | npm | App | **纯 Node.js** |
-
-### Temine 是什么？
-
-Temine 是一个专为 AI 编程场景设计的终端管理工具。当你同时运行多个 Claude Code / AI CLI 窗口时，Temine 帮你解决窗口管理的混乱：
-
-- **智能窗口排布** — 一键打开多个终端并自动排列
-- **AI 状态检测** — 实时监控 Claude 运行状态（运行中 / 空闲 / 等待确认）
-- **系统通知** — AI 需要确认时弹出通知提醒
-- **Web 控制面板** — 在浏览器中管理所有终端
-- **SSH 快捷启动** — 管理 SSH 连接和项目预设，一键批量打开远程终端
-- **全局录制开关** — 一键暂停/恢复终端内容监控，减少 AppleScript 轮询开销
-- **稳定编号** — 窗口编号固定不变，不因切换焦点而改变
-- **输出记录** — 保存和搜索终端输出历史
-- **局部屏幕排布** — 终端只占屏幕一半、三分之二等区域
-- **窗口标签** — 给终端命名，自动匹配图标
+- **多终端排布** — 一键开 N 个终端窗口并自动排列
+- **AI 状态检测** — 实时识别运行中 / 空闲 / 等待确认
+- **Dynamic Island 浮岛** — 桌面右上小胶囊，3 个常用动作一键直达
+- **Chrome 窗口管理** — 列窗口、聚焦、桌面堆叠
+- **Web 控制面板** — 浏览器统一管控
+- **SSH 快捷启动** — 项目预设一键批量打开远程终端
 
 ### 安装
 
 ```bash
-git clone https://github.com/zzmlb/temine.git
-cd temine
-npm link
+npm install -g github:zzmlb/temine
 ```
 
 ### 快速开始
 
 ```bash
-# 打开 4 个终端窗口并自动排列
-temine open 4
+# 生成 Temine.app 放到 Dock（推荐，最常用入口）
+sudo temine app
 
-# 启动 AI 状态监控
-temine watch
+# 启动 Dynamic Island 浮岛
+temine island
 
-# 启动 Web 控制面板（默认端口 7890）
+# 直接启动 Web 面板（默认 7890）
 temine panel
-
-# 浏览器打开 http://localhost:7890
 ```
 
-### 命令列表
+### Dynamic Island 浮岛（macOS）
 
-| 命令 | 说明 |
+桌面右上的胶囊浮岛，平时灵动呼吸；hover 展开后 3 个按钮：
+
+| 按钮 | 行为 |
 |------|------|
-| `temine open <数量>` | 打开多个终端并自动排列 |
-| `temine arrange` | 重新排布已有终端窗口 |
-| `temine arrange --layout 3x2` | 使用预设布局排列 |
-| `temine arrange layouts` | 查看所有布局预设 |
-| `temine list` | 列出所有终端窗口 |
-| `temine label <编号> <名称>` | 给窗口命名（自动匹配图标） |
-| `temine label-all <名1> <名2> ...` | 批量命名所有窗口 |
-| `temine watch` | 启动 AI 状态监控 |
-| `temine status` | 查看监控状态 |
-| `temine stop` | 停止监控 |
-| `temine float` | 终端内状态浮窗 |
-| `temine panel [端口]` | 启动 Web 控制面板（默认 7890） |
-| `temine log list` | 列出记录的会话 |
-| `temine log show <ID> [行数]` | 查看输出历史 |
-| `temine log search <关键词>` | 搜索历史记录 |
-| `temine log export <ID> [文件]` | 导出记录 |
-| `temine config` | 查看配置 |
-| `temine config set <key> <val>` | 修改配置 |
-| `temine config reset` | 重置默认配置 |
+| 📋 **Panel** | toggle Web 控制面板（开了再点就关） |
+| 🪟 **Chrome** | 把所有 Chrome 窗口整齐桌面堆叠 |
+| 📐 **Arrange** | 按预设序列循环排布终端窗口 |
 
-### 参数选项
+随手能玩的山洞探险像素动画（CALayer GPU 加速，零 CPU），可在面板"灵动岛配置"里关闭。
+
+### Web 面板
+
+`temine panel` 启动 → 浏览器打开 http://localhost:7890
+
+| Tab | 用途 |
+|-----|------|
+| **控制面板** | 总览所有终端 + 状态指示 + 在线排布 / 重命名 / 互换 |
+| **Chrome 窗口** | 列出 Chrome 所有窗口、聚焦、桌面堆叠 |
+| **快捷启动** | SSH 连接管理 + 项目预设 + 批量打开远程终端 |
+| **灵动岛配置** | 编辑 Arrange 序列、动画开关 |
+
+> 另有 records tab 用于回看终端输出/命令历史，按需启用。
+
+### 常用命令
 
 ```bash
-temine open 6 --cols 3          # 3 列布局
-temine open 4 --app iTerm       # 使用 iTerm 而非 Terminal
-temine open 4 --gap 10          # 窗口间距 10 像素
-temine arrange --cols 2         # 重新排成 2 列
+temine open <N>         # 开 N 个终端并自动排布
+temine arrange          # 重新排布已有窗口
+temine list             # 列出所有终端窗口
+temine label <N> <名>    # 给窗口命名（自动匹配图标）
+temine watch            # 启动 AI 状态监控
+temine panel [端口]      # 启动 Web 面板（默认 7890）
+temine island           # 启动 Dynamic Island 浮岛
+temine app              # 生成 Temine.app 到 Dock
 ```
 
-### Web 控制面板功能
-
-通过 `temine panel` 启动的 Web 面板提供三个 Tab：
-
-**控制面板 Tab**
-- 查看所有终端状态（运行中 / 空闲 / 等待确认）
-- 屏幕区域选择（全屏、左半、右半、左⅔ 等）
-- 双击卡片跳转到对应终端窗口（带弹跳动画）
-- 在线重命名、窗口互换、忽略/显示
-- 每个终端独立的命令/输出录制开关
-
-**过程记录 Tab**
-- 终端输出日志、命令日志、手动快照
-- 在线查看、复制、导出
-
-**快捷启动 Tab**（v0.8 新增）
-- 左侧管理 SSH 连接（增删改查 + 连接测试）
-- 右侧管理项目预设（目录 + 启动命令）
-- 勾选多个预设 → 一键批量打开终端 → 自动排列
-
-**全局录制开关**（v0.8 新增）
-- Topbar 右侧实时显示录制状态（绿色=录制中 / 黄色=已暂停）
-- 关闭后 watcher 和 panel 均停止读取终端内容，降低 CPU 开销
-- 适合窗口较多时临时关闭监控，仅保留终端排布功能
-
-### AI 状态检测说明
-
-Temine 通过分析终端输出内容检测 AI 工具的工作状态：
-
-| 状态 | 指示 | 含义 |
-|------|------|------|
-| 🟢 运行中 | 绿色 | AI 正在输出内容 |
-| 🟡 空闲 | 黄色 | 终端空闲，等待用户输入 |
-| 🔴 等待确认 | 红色 | AI 需要用户确认（Y/N） |
-| ✅ 已完成 | 蓝色 | 任务完成 |
-| ❌ 错误 | 红色 | 检测到错误 |
+完整命令：`temine --help`
 
 ### 系统要求
 
-- **macOS**（使用 AppleScript 控制终端）
-- **Node.js** >= 18.0.0
-- **Terminal.app** 或 **iTerm2**
-
-### 工作原理
-
-Temine 利用 macOS AppleScript 与 Terminal.app / iTerm2 交互：
-- 读取终端内容检测 AI 状态
-- 控制窗口位置和大小实现排布
-- 设置自定义窗口标题实现标签功能
-- 通过 JXA 调用 `NSScreen.visibleFrame` 精确获取可用屏幕区域
+- macOS (AppleScript + PyObjC)
+- Node.js >= 18.0.0
+- Terminal.app 或 iTerm2
+- Google Chrome（面板 / Chrome 管理功能）
 
 ---
 
 ## English
 
-### Why Temine?
-
-When running 4-8 Claude Code instances simultaneously, **no existing tool** can:
-- Tile them on screen with one command
-- Detect which instance is waiting for your confirmation
-- Show all instance states in a browser dashboard
-- Push system notifications when AI needs you
-
-Temine fills this gap — the **only AI CLI orchestration tool** available today.
-
 ### What is Temine?
 
-Temine is a terminal management tool built for developers who run multiple AI CLI sessions (like Claude Code) in parallel. It solves the chaos of managing many terminal windows by providing:
+A macOS terminal orchestrator with a Dynamic Island floating button. Open/tile multiple Claude Code windows, manage Chrome, and trigger common actions from the desktop.
 
-- **Smart window arrangement** — Open and tile terminal windows with one command
-- **AI state detection** — Know when Claude is running, idle, or waiting for confirmation
-- **System notifications** — Get notified when AI needs your input
-- **Web dashboard** — Control all terminals from a browser panel
-- **SSH quick launch** — Manage SSH connections and project presets, batch-open remote terminals
-- **Global recording toggle** — Pause/resume terminal monitoring to reduce AppleScript overhead
-- **Stable numbering** — Windows keep their numbers even when focus changes
-- **Output recording** — Save and search terminal output history
-- **Partial screen layouts** — Arrange terminals in half-screen, two-thirds, etc.
-- **Window labels** — Name your terminals with auto-matched icons
+- **Multi-terminal arrangement** — Open N windows, auto-tiled
+- **AI state detection** — Running / idle / waiting-confirm
+- **Dynamic Island** — Pill-shaped floater on the desktop, 3 quick actions
+- **Chrome management** — List, focus, desktop-stack windows
+- **Web dashboard** — Manage everything from a browser
+- **SSH quick launch** — Batch-open remote terminals from presets
 
-### Installation
+### Install
 
 ```bash
-git clone https://github.com/zzmlb/temine.git
-cd temine
-npm link
+npm install -g github:zzmlb/temine
 ```
 
-### Quick Start
+### Quick start
 
 ```bash
-# Open 4 terminal windows, auto-arranged
-temine open 4
-
-# Start AI state monitoring
-temine watch
-
-# Launch web control panel (default port 7890)
-temine panel
-
-# Open browser to http://localhost:7890
+sudo temine app          # Drop Temine.app into Dock
+temine island            # Start the Dynamic Island
+temine panel             # Web dashboard at :7890
 ```
 
-### Commands
+### Dynamic Island (macOS)
 
-| Command | Description |
-|---------|-------------|
-| `temine open <N>` | Open N terminal windows and auto-arrange |
-| `temine arrange` | Re-arrange existing terminal windows |
-| `temine arrange --layout 3x2` | Arrange using preset layout |
-| `temine arrange layouts` | Show all available layout presets |
-| `temine list` | List all terminal windows |
-| `temine label <N> <name>` | Name a window (auto icon matching) |
-| `temine label-all <n1> <n2> ...` | Name all windows at once |
-| `temine watch` | Start AI state monitoring |
-| `temine status` | Show monitoring status |
-| `temine stop` | Stop monitoring |
-| `temine float` | Show terminal status panel (TUI) |
-| `temine panel [port]` | Launch web dashboard (default: 7890) |
-| `temine log list` | List recorded sessions |
-| `temine log show <ID>` | View output history |
-| `temine log search <keyword>` | Search history |
-| `temine log export <ID> [file]` | Export log to file |
-| `temine config` | View configuration |
-| `temine config set <key> <val>` | Set configuration value |
-| `temine config reset` | Reset to defaults |
+A small breathing pill at the top-right of your desktop. Hover to expand 3 buttons:
 
-### Options
+| Button | Action |
+|--------|--------|
+| 📋 Panel | toggle the web dashboard |
+| 🪟 Chrome | desktop-stack all Chrome windows |
+| 📐 Arrange | cycle through preset terminal layouts |
 
-```bash
-temine open 6 --cols 3          # 3 columns layout
-temine open 4 --app iTerm       # Use iTerm instead of Terminal
-temine open 4 --gap 10          # 10px gap between windows
-temine arrange --cols 2         # Re-arrange in 2 columns
-```
+Includes an optional pixel-art cave-adventure animation (GPU-accelerated, zero CPU). Toggle in the dashboard.
 
-### Web Dashboard Features
+### Web dashboard
 
-The web dashboard (`temine panel`) provides three tabs:
+`temine panel` → open http://localhost:7890
 
-**Control Panel Tab**
-- View all terminals with status indicators (running/idle/waiting)
-- Screen region selection (full, left/right half, two-thirds, etc.)
-- Double-click to jump to any terminal window (with bounce animation)
-- Label editing, window swapping, ignore/show toggles
-- Per-terminal command/output recording toggles
+| Tab | Purpose |
+|-----|---------|
+| **Control** | Overview + state + arrange / rename / swap |
+| **Chrome** | List Chrome windows, focus, stack |
+| **Quick Launch** | SSH presets, batch-open remote terminals |
+| **Island Config** | Edit Arrange sequence, animation toggle |
 
-**Records Tab**
-- Terminal output logs, command logs, manual snapshots
-- Online viewing, copying, exporting
-
-**Quick Launch Tab** (v0.8)
-- Left panel: SSH connection management (CRUD + connectivity test)
-- Right panel: project presets (directory + startup command)
-- Select presets → batch-open terminals → auto-arrange
-
-**Global Recording Toggle** (v0.8)
-- Topbar shows recording state (green = active / yellow = paused)
-- When off, both watcher and panel skip terminal content reading
-- Useful for reducing CPU when many windows are open
-
-### AI State Detection
-
-Temine detects the state of AI CLI tools by analyzing terminal output:
-
-| State | Indicator | Meaning |
-|-------|-----------|---------|
-| 🟢 Running | Green | AI is actively generating output |
-| 🟡 Idle | Yellow | Terminal is idle, waiting for input |
-| 🔴 Waiting | Red | AI needs confirmation (Y/N prompt) |
-| ✅ Completed | Blue | Task completed |
-| ❌ Error | Red | Error detected |
+> A `records` tab is also available for terminal output/command playback. Off by default.
 
 ### Requirements
 
-- **macOS** (uses AppleScript for terminal control)
-- **Node.js** >= 18.0.0
-- **Terminal.app** or **iTerm2**
-
-### How It Works
-
-Temine uses macOS AppleScript to interact with Terminal.app/iTerm2:
-- Reads terminal content to detect AI states
-- Controls window position and size for arrangement
-- Sets custom window titles for labeling
-- Uses `NSScreen.visibleFrame` (via JXA) for accurate screen detection
+- macOS (uses AppleScript + PyObjC)
+- Node.js >= 18.0.0
+- Terminal.app or iTerm2
+- Google Chrome (for panel & Chrome management)
 
 ---
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).
 
 ## Author
 
