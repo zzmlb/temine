@@ -183,17 +183,28 @@ DEFAULT_ARRANGE_SEQUENCE = ["full", "top-half", "bottom-half"]
 ISLAND_CFG_FILE = Path.home() / ".temine" / "island-config.json"
 
 
+def load_island_config() -> dict:
+    """读完整 island-config.json"""
+    try:
+        return json.loads(ISLAND_CFG_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def is_animation_enabled() -> bool:
+    cfg = load_island_config()
+    val = cfg.get("animationEnabled", True)
+    return val is None or bool(val)
+
+
 def load_arrange_sequence() -> list[dict]:
     """从 ~/.temine/island-config.json 读激活的排版列表，每次按按钮都重新读（支持热更新）"""
-    try:
-        cfg = json.loads(ISLAND_CFG_FILE.read_text())
-        seq = cfg.get("arrangeSequence", [])
-        if isinstance(seq, list) and seq:
-            valid = [r for r in seq if r in ALL_REGIONS]
-            if valid:
-                return [{"name": ALL_REGIONS[r], "region": r, "cols": 0} for r in valid]
-    except Exception:
-        pass
+    cfg = load_island_config()
+    seq = cfg.get("arrangeSequence", [])
+    if isinstance(seq, list) and seq:
+        valid = [r for r in seq if r in ALL_REGIONS]
+        if valid:
+            return [{"name": ALL_REGIONS[r], "region": r, "cols": 0} for r in valid]
     return [{"name": ALL_REGIONS[r], "region": r, "cols": 0} for r in DEFAULT_ARRANGE_SEQUENCE]
 
 
@@ -1190,11 +1201,13 @@ class IslandView(NSView):
             if dot_layer is not None:
                 dot_layer.setBackgroundColor_(NSColor.systemPinkColor().CGColor())
                 dot_layer.setCornerRadius_(dot_size / 2.0)
-                dot_layer.setShadowColor_(NSColor.systemPinkColor().CGColor())
-                dot_layer.setShadowOpacity_(0.85)
-                dot_layer.setShadowRadius_(8.0)
-                dot_layer.setShadowOffset_((0.0, 0.0))
-                self._add_breathe_animation(dot_layer)
+                if is_animation_enabled():
+                    # 仅开启动画时加发光阴影 + 呼吸
+                    dot_layer.setShadowColor_(NSColor.systemPinkColor().CGColor())
+                    dot_layer.setShadowOpacity_(0.85)
+                    dot_layer.setShadowRadius_(8.0)
+                    dot_layer.setShadowOffset_((0.0, 0.0))
+                    self._add_breathe_animation(dot_layer)
             self.addSubview_(self.dot_view)
 
             # 按钮 1：开/关控制面板（SF Symbol "macwindow"）
@@ -1384,11 +1397,14 @@ class IslandView(NSView):
                 print("[island] tracking area added", file=sys.stderr)
             if self.dot_view is None:
                 self._setup_layers()
-            # 创建并显示舞台
-            if self.stage is None:
-                self.stage = StageWindow.alloc().init()
-            self._sync_stage()
-            self.stage.show()
+            # 仅开启动画时创建舞台
+            if is_animation_enabled():
+                if self.stage is None:
+                    self.stage = StageWindow.alloc().init()
+                self._sync_stage()
+                self.stage.show()
+            else:
+                print("[island] animation disabled by config, skip stage", file=sys.stderr)
         except Exception as e:
             import traceback
             print(f"[island] viewDidMoveToWindow EXCEPTION: {type(e).__name__}: {e}", file=sys.stderr)
