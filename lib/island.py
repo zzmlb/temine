@@ -15,6 +15,7 @@ TemineIsland —— 桌面悬浮灵动岛按钮（独立常驻进程，不依赖
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
@@ -84,6 +85,9 @@ PORT = 7890
 PANEL_URL = f"http://localhost:{PORT}"
 STATE_DIR = Path.home() / ".temine" / "island"
 STATE_FILE = STATE_DIR / "state.json"
+
+# 单实例 fcntl 锁的文件句柄（必须保持进程存活期间 open，否则锁释放）
+_SINGLETON_LOCK = None
 
 # 紧凑/展开**高度必须相同**，否则鼠标会在垂直方向出展开窗口边界，引发抖动
 COMPACT_W, COMPACT_H = 110, 48
@@ -1630,22 +1634,34 @@ def main() -> None:
     except Exception:
         pass
 
-    # 防止重复启动：用 PID 文件
+    # 单实例锁：fcntl 文件锁是 OS 级的，进程崩溃时 OS 自动释放，
+    # 比"读 PID 文件 + os.kill(pid,0)"可靠（后者无法识别 PID 复用，
+    # 也无法处理崩溃后残留的 pid 文件）。
     pid_file = STATE_DIR / "island.pid"
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        if pid_file.exists():
-            try:
-                old_pid = int(pid_file.read_text().strip())
-                os.kill(old_pid, 0)
-                # 旧进程仍在跑，退出
-                print("TemineIsland 已经在运行 (pid=%d)" % old_pid, file=sys.stderr)
-                return
-            except Exception:
-                pass
-        pid_file.write_text(str(os.getpid()))
     except Exception:
         pass
+    try:
+        # 注意：lock_fp 必须保持 open 直到进程结束，否则锁释放。
+        # 这里赋给一个全局名，防止被 GC 关闭。
+        lock_fp = open(pid_file, "w")
+        fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fp.write(str(os.getpid()))
+        lock_fp.flush()
+        global _SINGLETON_LOCK
+        _SINGLETON_LOCK = lock_fp
+    except BlockingIOError:
+        # 已有 island 实例在跑
+        try:
+            existing = open(pid_file).read().strip()
+            print(f"TemineIsland 已经在运行 (pid={existing})", file=sys.stderr)
+        except Exception:
+            print("TemineIsland 已经在运行", file=sys.stderr)
+        return
+    except Exception as e:
+        # 文件系统/权限异常：警告但继续启动，避免锁文件机制本身阻断使用
+        print(f"⚠️ 单实例锁初始化失败: {e}（继续启动，但可能出现多实例）", file=sys.stderr)
 
     app = NSApplication.sharedApplication()
     delegate = AppDelegate.alloc().init()
@@ -1654,6 +1670,7 @@ def main() -> None:
     try:
         app.run()
     finally:
+        # 进程正常退出时清理 pid 文件（崩溃时 OS 自动释放 flock 即可）
         try:
             pid_file.unlink()
         except Exception:
