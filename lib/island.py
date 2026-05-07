@@ -216,6 +216,7 @@ def load_arrange_sequence() -> list[dict]:
 def trigger_chrome_stack() -> None:
     """调 panel 的 /api/chrome/stack 让 Chrome 窗口在桌面上堆叠"""
     if not ensure_panel_running():
+        print("[island] chrome stack skipped: panel server 未启动（spawn temine panel 失败或端口被占用）", file=sys.stderr)
         return
     try:
         from AppKit import NSScreen  # type: ignore[import-not-found]
@@ -233,7 +234,8 @@ def trigger_chrome_stack() -> None:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as r:
-            r.read()
+            resp = r.read().decode("utf-8", errors="ignore")
+        print(f"[island] chrome stack done: {resp[:200]}", file=sys.stderr)
     except Exception as e:
         print(f"[island] chrome stack failed: {e}", file=sys.stderr)
 
@@ -241,6 +243,7 @@ def trigger_chrome_stack() -> None:
 def trigger_arrange(region: str = "full", cols: int = 0) -> None:
     """调用控制面板的 /api/arrange 接口，按指定 region 排布"""
     if not ensure_panel_running():
+        print("[island] arrange skipped: panel server 未启动（spawn temine panel 失败或端口被占用）", file=sys.stderr)
         return
     try:
         body = json.dumps({"cols": cols, "region": region}).encode("utf-8")
@@ -251,7 +254,8 @@ def trigger_arrange(region: str = "full", cols: int = 0) -> None:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as r:
-            r.read()
+            resp = r.read().decode("utf-8", errors="ignore")
+        print(f"[island] arrange done: {resp[:200]}", file=sys.stderr)
     except Exception as e:
         print(f"[island] arrange failed: {e}", file=sys.stderr)
 
