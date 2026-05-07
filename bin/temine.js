@@ -386,32 +386,11 @@ end run
       if (!pipOk) break;
     }
 
-    // 3. 重装前先清理：杀掉所有遗留的 island.py 进程，关掉所有 panel app-mode Chrome 窗口
-    //    避免新装的 .app 启动后跟旧实例并存（多个 alwaysOnTop 透明窗口叠加 + 资源争抢 → 卡死）
-    try { ex(`pkill -f "${ISLAND_PY}"`, { stdio: 'ignore' }); } catch {}
-    try {
-      ex(`osascript -e 'tell application "Google Chrome"
-        set toClose to {}
-        repeat with w in windows
-          try
-            if URL of active tab of w starts with "http://localhost:7890" then
-              set end of toClose to w
-            end if
-          end try
-        end repeat
-        repeat with w in toClose
-          close w
-        end repeat
-      end tell' 2>/dev/null`, { stdio: 'ignore' });
-    } catch {}
-    // 删旧 PID 文件（fcntl 锁会随进程退出释放，但文件残留不删的话内容是旧 pid）
-    try { rmSync(`${ISLAND_DIR}/island.pid`); } catch {}
-
-    // 4. 复制 island.py 到 ~/.temine/island/
+    // 3. 复制 island.py 到 ~/.temine/island/
     mkdirSync(ISLAND_DIR, { recursive: true });
     copyFileSync(SRC_PY, ISLAND_PY);
 
-    // 5. osacompile 一个 .app 壳，双击启动 python 进程
+    // 4. osacompile 一个 .app 壳，双击启动 python 进程
     const parentDir = APP_DIR.replace(/\/[^/]+$/, '');
     mkdirSync(parentDir, { recursive: true });
     if (ex2(APP_DIR)) rmSync(APP_DIR, { recursive: true });
@@ -431,7 +410,7 @@ end run
       break;
     }
 
-    // 6. 立即启动一次（如未在跑）
+    // 5. 立即启动一次（如未在跑）
     let alreadyRunning = false;
     if (ex2(PID_FILE)) {
       try {

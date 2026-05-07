@@ -15,12 +15,10 @@ TemineIsland —— 桌面悬浮灵动岛按钮（独立常驻进程，不依赖
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import subprocess
 import sys
-import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -85,9 +83,6 @@ PORT = 7890
 PANEL_URL = f"http://localhost:{PORT}"
 STATE_DIR = Path.home() / ".temine" / "island"
 STATE_FILE = STATE_DIR / "state.json"
-
-# 单实例 fcntl 锁的文件句柄（必须保持进程存活期间 open，否则锁释放）
-_SINGLETON_LOCK = None
 
 # 紧凑/展开**高度必须相同**，否则鼠标会在垂直方向出展开窗口边界，引发抖动
 COMPACT_W, COMPACT_H = 110, 48
@@ -216,7 +211,6 @@ def load_arrange_sequence() -> list[dict]:
 def trigger_chrome_stack() -> None:
     """调 panel 的 /api/chrome/stack 让 Chrome 窗口在桌面上堆叠"""
     if not ensure_panel_running():
-        print("[island] chrome stack skipped: panel server 未启动（spawn temine panel 失败或端口被占用）", file=sys.stderr)
         return
     try:
         from AppKit import NSScreen  # type: ignore[import-not-found]
@@ -234,8 +228,7 @@ def trigger_chrome_stack() -> None:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as r:
-            resp = r.read().decode("utf-8", errors="ignore")
-        print(f"[island] chrome stack done: {resp[:200]}", file=sys.stderr)
+            r.read()
     except Exception as e:
         print(f"[island] chrome stack failed: {e}", file=sys.stderr)
 
@@ -243,7 +236,6 @@ def trigger_chrome_stack() -> None:
 def trigger_arrange(region: str = "full", cols: int = 0) -> None:
     """调用控制面板的 /api/arrange 接口，按指定 region 排布"""
     if not ensure_panel_running():
-        print("[island] arrange skipped: panel server 未启动（spawn temine panel 失败或端口被占用）", file=sys.stderr)
         return
     try:
         body = json.dumps({"cols": cols, "region": region}).encode("utf-8")
@@ -254,8 +246,7 @@ def trigger_arrange(region: str = "full", cols: int = 0) -> None:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as r:
-            resp = r.read().decode("utf-8", errors="ignore")
-        print(f"[island] arrange done: {resp[:200]}", file=sys.stderr)
+            r.read()
     except Exception as e:
         print(f"[island] arrange failed: {e}", file=sys.stderr)
 
@@ -1366,8 +1357,7 @@ class IslandView(NSView):
             print(f"[island] breathe anim failed: {e}", file=sys.stderr)
 
     def onClickPanel_(self, _sender):
-        # 后台线程跑 subprocess + HTTP，否则会阻塞 AppKit 主线程导致光标转圈卡死
-        threading.Thread(target=toggle_panel_window, daemon=True).start()
+        toggle_panel_window()
 
     def onClickArrange_(self, _sender):
         # 每次重新读 config，支持面板里改了配置后立即生效
@@ -1377,18 +1367,12 @@ class IslandView(NSView):
         idx = self.arrange_idx % len(seq)
         item = seq[idx]
         print(f"[island] arrange → {item['name']} ({item['region']})", file=sys.stderr)
-        # 后台线程跑 HTTP POST（urllib timeout=5s），否则点了之后整个灵动岛假死
-        threading.Thread(
-            target=trigger_arrange,
-            kwargs={"region": item["region"], "cols": item["cols"]},
-            daemon=True,
-        ).start()
+        trigger_arrange(region=item["region"], cols=item["cols"])
         self.arrange_idx = (idx + 1) % len(seq)
 
     def onClickChrome_(self, _sender):
         # 单击 Chrome 按钮 → 直接桌面堆叠所有 Chrome 窗口
-        # 后台线程跑 osascript subprocess，避免阻塞主线程
-        threading.Thread(target=trigger_chrome_stack, daemon=True).start()
+        trigger_chrome_stack()
 
     def viewDidMoveToWindow(self):
         try:
@@ -1479,10 +1463,8 @@ class IslandView(NSView):
         cur = win.frame()
         new_x = cur.origin.x + (cur.size.width - new_w) / 2.0
         new_y = cur.origin.y + (cur.size.height - new_h) / 2.0
-        # animate=False：NSWindow 自带的 setFrame spring 动画是同步阻塞主线程的，
-        # hover 抖动期间会把主线程占满 → 点击没响应，光标 busy 转圈。瞬间形变换稳定。
         win.setFrame_display_animate_(
-            NSMakeRect(new_x, new_y, new_w, new_h), True, False
+            NSMakeRect(new_x, new_y, new_w, new_h), True, True
         )
         # 展开/收缩后舞台位置也要同步
         self._sync_stage()
@@ -1638,34 +1620,22 @@ def main() -> None:
     except Exception:
         pass
 
-    # 单实例锁：fcntl 文件锁是 OS 级的，进程崩溃时 OS 自动释放，
-    # 比"读 PID 文件 + os.kill(pid,0)"可靠（后者无法识别 PID 复用，
-    # 也无法处理崩溃后残留的 pid 文件）。
+    # 防止重复启动：用 PID 文件
     pid_file = STATE_DIR / "island.pid"
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if pid_file.exists():
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 0)
+                # 旧进程仍在跑，退出
+                print("TemineIsland 已经在运行 (pid=%d)" % old_pid, file=sys.stderr)
+                return
+            except Exception:
+                pass
+        pid_file.write_text(str(os.getpid()))
     except Exception:
         pass
-    try:
-        # 注意：lock_fp 必须保持 open 直到进程结束，否则锁释放。
-        # 这里赋给一个全局名，防止被 GC 关闭。
-        lock_fp = open(pid_file, "w")
-        fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        lock_fp.write(str(os.getpid()))
-        lock_fp.flush()
-        global _SINGLETON_LOCK
-        _SINGLETON_LOCK = lock_fp
-    except BlockingIOError:
-        # 已有 island 实例在跑
-        try:
-            existing = open(pid_file).read().strip()
-            print(f"TemineIsland 已经在运行 (pid={existing})", file=sys.stderr)
-        except Exception:
-            print("TemineIsland 已经在运行", file=sys.stderr)
-        return
-    except Exception as e:
-        # 文件系统/权限异常：警告但继续启动，避免锁文件机制本身阻断使用
-        print(f"⚠️ 单实例锁初始化失败: {e}（继续启动，但可能出现多实例）", file=sys.stderr)
 
     app = NSApplication.sharedApplication()
     delegate = AppDelegate.alloc().init()
@@ -1674,7 +1644,6 @@ def main() -> None:
     try:
         app.run()
     finally:
-        # 进程正常退出时清理 pid 文件（崩溃时 OS 自动释放 flock 即可）
         try:
             pid_file.unlink()
         except Exception:
