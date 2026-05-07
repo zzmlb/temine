@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -1357,7 +1358,8 @@ class IslandView(NSView):
             print(f"[island] breathe anim failed: {e}", file=sys.stderr)
 
     def onClickPanel_(self, _sender):
-        toggle_panel_window()
+        # 后台线程跑 subprocess + HTTP，否则会阻塞 AppKit 主线程导致光标转圈卡死
+        threading.Thread(target=toggle_panel_window, daemon=True).start()
 
     def onClickArrange_(self, _sender):
         # 每次重新读 config，支持面板里改了配置后立即生效
@@ -1367,12 +1369,18 @@ class IslandView(NSView):
         idx = self.arrange_idx % len(seq)
         item = seq[idx]
         print(f"[island] arrange → {item['name']} ({item['region']})", file=sys.stderr)
-        trigger_arrange(region=item["region"], cols=item["cols"])
+        # 后台线程跑 HTTP POST（urllib timeout=5s），否则点了之后整个灵动岛假死
+        threading.Thread(
+            target=trigger_arrange,
+            kwargs={"region": item["region"], "cols": item["cols"]},
+            daemon=True,
+        ).start()
         self.arrange_idx = (idx + 1) % len(seq)
 
     def onClickChrome_(self, _sender):
         # 单击 Chrome 按钮 → 直接桌面堆叠所有 Chrome 窗口
-        trigger_chrome_stack()
+        # 后台线程跑 osascript subprocess，避免阻塞主线程
+        threading.Thread(target=trigger_chrome_stack, daemon=True).start()
 
     def viewDidMoveToWindow(self):
         try:
@@ -1463,8 +1471,10 @@ class IslandView(NSView):
         cur = win.frame()
         new_x = cur.origin.x + (cur.size.width - new_w) / 2.0
         new_y = cur.origin.y + (cur.size.height - new_h) / 2.0
+        # animate=False：NSWindow 自带的 setFrame spring 动画是同步阻塞主线程的，
+        # hover 抖动期间会把主线程占满 → 点击没响应，光标 busy 转圈。瞬间形变换稳定。
         win.setFrame_display_animate_(
-            NSMakeRect(new_x, new_y, new_w, new_h), True, True
+            NSMakeRect(new_x, new_y, new_w, new_h), True, False
         )
         # 展开/收缩后舞台位置也要同步
         self._sync_stage()
