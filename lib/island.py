@@ -89,6 +89,14 @@ STATE_FILE = STATE_DIR / "state.json"
 # 单实例 fcntl 锁的文件句柄（必须保持进程存活期间 open，否则锁释放）
 _SINGLETON_LOCK = None
 
+# 按钮防抖锁：用户连点时上一次还没完成就忽略，避免：
+# - panel：toggle_panel_window 慢（osascript 查 Chrome + spawn panel server）
+#   多点会并发开多个 Chrome --app 窗口，用户报"过一会出来很多个"就是这个
+# - arrange / chrome：HTTP POST 慢，多点会发出多个请求，相互覆盖结果
+_PANEL_TOGGLE_LOCK = threading.Lock()
+_ARRANGE_LOCK = threading.Lock()
+_CHROME_STACK_LOCK = threading.Lock()
+
 # 紧凑/展开**高度必须相同**，否则鼠标会在垂直方向出展开窗口边界，引发抖动
 COMPACT_W, COMPACT_H = 110, 48
 # 灵动岛展开尺寸：3 按钮均匀对称布局
@@ -216,6 +224,7 @@ def load_arrange_sequence() -> list[dict]:
 def trigger_chrome_stack() -> None:
     """调 panel 的 /api/chrome/stack 让 Chrome 窗口在桌面上堆叠"""
     if not ensure_panel_running():
+        print("[island] chrome stack 跳过：panel server 未启动成功", file=sys.stderr)
         return
     try:
         from AppKit import NSScreen  # type: ignore[import-not-found]
@@ -233,7 +242,10 @@ def trigger_chrome_stack() -> None:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as r:
-            r.read()
+            resp = r.read().decode("utf-8", errors="ignore")
+        # 把 panel 的响应打出来。常见 silent 失败场景：
+        # 用户没开普通 Chrome 窗口（只有 app-mode panel 窗口不算），返回 {"ok":false}
+        print(f"[island] chrome stack done: {resp[:200]}", file=sys.stderr)
     except Exception as e:
         print(f"[island] chrome stack failed: {e}", file=sys.stderr)
 
@@ -241,6 +253,7 @@ def trigger_chrome_stack() -> None:
 def trigger_arrange(region: str = "full", cols: int = 0) -> None:
     """调用控制面板的 /api/arrange 接口，按指定 region 排布"""
     if not ensure_panel_running():
+        print("[island] arrange 跳过：panel server 未启动成功", file=sys.stderr)
         return
     try:
         body = json.dumps({"cols": cols, "region": region}).encode("utf-8")
@@ -251,7 +264,10 @@ def trigger_arrange(region: str = "full", cols: int = 0) -> None:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as r:
-            r.read()
+            resp = r.read().decode("utf-8", errors="ignore")
+        # 常见 silent 失败：arrangeWindowsApi 用 "Terminal" AppleScript 控制 macOS 自带 Terminal.app
+        # 如果你用 iTerm2 / 没开 Terminal 窗口，返回 {"ok":false}
+        print(f"[island] arrange done: {resp[:200]}", file=sys.stderr)
     except Exception as e:
         print(f"[island] arrange failed: {e}", file=sys.stderr)
 
@@ -1362,8 +1378,19 @@ class IslandView(NSView):
             print(f"[island] breathe anim failed: {e}", file=sys.stderr)
 
     def onClickPanel_(self, _sender):
-        # 后台线程跑 subprocess + HTTP，否则会阻塞 AppKit 主线程导致光标转圈卡死
-        threading.Thread(target=toggle_panel_window, daemon=True).start()
+        # 后台线程 + 锁去重：连点时上一次 toggle 还没完就忽略
+        # 这是为了根治"一次点击没反应过一会出来很多窗口"——之前每次点都启
+        # 一个新 thread 并发跑 toggle_panel_window，多个 thread 并发查 Chrome
+        # 状态都判定"未开" → 各自打开新窗口 → 累积。
+        def run():
+            if not _PANEL_TOGGLE_LOCK.acquire(blocking=False):
+                print("[island] panel toggle 进行中，忽略重复点击", file=sys.stderr)
+                return
+            try:
+                toggle_panel_window()
+            finally:
+                _PANEL_TOGGLE_LOCK.release()
+        threading.Thread(target=run, daemon=True).start()
 
     def onClickArrange_(self, _sender):
         # 每次重新读 config，支持面板里改了配置后立即生效
@@ -1373,18 +1400,28 @@ class IslandView(NSView):
         idx = self.arrange_idx % len(seq)
         item = seq[idx]
         print(f"[island] arrange → {item['name']} ({item['region']})", file=sys.stderr)
-        # 后台线程跑 HTTP POST（urllib timeout=5s），否则点了之后整个灵动岛假死
-        threading.Thread(
-            target=trigger_arrange,
-            kwargs={"region": item["region"], "cols": item["cols"]},
-            daemon=True,
-        ).start()
+        def run():
+            if not _ARRANGE_LOCK.acquire(blocking=False):
+                print("[island] arrange 进行中，忽略重复点击", file=sys.stderr)
+                return
+            try:
+                trigger_arrange(region=item["region"], cols=item["cols"])
+            finally:
+                _ARRANGE_LOCK.release()
+        threading.Thread(target=run, daemon=True).start()
         self.arrange_idx = (idx + 1) % len(seq)
 
     def onClickChrome_(self, _sender):
-        # 单击 Chrome 按钮 → 直接桌面堆叠所有 Chrome 窗口
-        # 后台线程跑 osascript subprocess，避免阻塞主线程
-        threading.Thread(target=trigger_chrome_stack, daemon=True).start()
+        # 单击 Chrome 按钮 → 桌面堆叠所有 Chrome 窗口
+        def run():
+            if not _CHROME_STACK_LOCK.acquire(blocking=False):
+                print("[island] chrome stack 进行中，忽略重复点击", file=sys.stderr)
+                return
+            try:
+                trigger_chrome_stack()
+            finally:
+                _CHROME_STACK_LOCK.release()
+        threading.Thread(target=run, daemon=True).start()
 
     def viewDidMoveToWindow(self):
         try:
